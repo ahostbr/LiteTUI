@@ -18,6 +18,36 @@ fails if this file's top released heading disagrees with it.
 
 ## [Unreleased]
 
+## [0.30.0] - 2026-11-14
+
+The engine starts when you send, `/engine restart` exists, and local engines keep the conversation's prompt cache instead of recomputing it. Nothing here has been checked end to end by the maintainer; the engine-flow changes were tested with stub engines only.
+
+### Added
+- **`/engine restart`.** Stops the engine LiteTUI started, then starts it again on the current settings.
+- **A send starts the engine.** Sending a message with nothing serving starts the chosen engine and sends once it has loaded, with load-progress lines. A message typed while a start is loading queues behind it (never a second start), and it returns to the input box if the start fails.
+- **DSpine drafter recipes.** A DSpine launch recipe names its drafter (`--spec dspine --draft-model`) and is refused before load if the file is missing; a drafter-only `.ninfer` is no longer offered as a model in `/model`. Dflash drafts go up to 15 tokens.
+- **Paid Anthropic API-key backend**, with provider keys sealed at rest.
+
+### Changed
+- **Local engines keep the prompt cache.** The conversation's prefix cache survives card summaries and side calls, survives a restart of an engine LiteTUI owns, and the router keeps a conversation's slot through side calls. The tool advertisement is frozen per conversation so the prefix stays the same. Strata runs with its conversation cache on and the effort sentence at the end.
+- **The start timeout** is a no-new-output window instead of a fixed 180 s wall.
+- On llama.cpp builds that removed `--mmap`/`--mlock` (b12078), the settings are written as `--load-mode`.
+
+### Fixed
+- **`/engine stop` ends a start that is stalled or busy** (the whole process tree). Strata's unload grace before the kill is 5 s instead of 30 s.
+- **A dead engine registration is cleared** silently instead of showing "may still be loading".
+- Prefix-cache compaction runs on every local engine with a prefix cache.
+- An agent launch waits for a home another process is still creating.
+- The slot-save sweep and its size cap touch only LiteTUI's own files.
+- Codex mid-turn steering finds its accepted user row again.
+- A saved thinking level the default list lacks stays selectable, so `/settings` opens.
+- The prompt-progress failure is retried without progress reports when it arrives mid-stream, not only from the call.
+- The chat's follow pass no longer folds a card it has not laid out yet.
+- A conversation save never writes `subagent_model` on its own.
+
+### Security
+- pillow 13.0.0 (PYSEC-2026-4363); opentelemetry-api 1.45.2 (CVE-2026-114603); the fixed anyio, certifi and pygments in `uv.lock`.
+
 ## [0.29.1] - 2026-11-08
 
 Compaction on a nearly full window now works on NInfer, and the prefill readout counts the same tokens its percent does.
