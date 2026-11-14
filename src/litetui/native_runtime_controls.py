@@ -212,7 +212,7 @@ def _same(state, *, historical=False):
     app = state.app
     if app._agent_session is not state.references[0]:
         raise ValueError("Runtime control AgentSession changed")
-    app._validate_owned_identity()
+    work.validate_identity(app)  # Ctrl+T and /plan need no chosen model in Python either.
     if historical:
         return
     if (not enabled(app) or work.bridge(app) is not state.bridge or work.identity(app) != state.bridge.identity
@@ -391,9 +391,11 @@ def mutation_hold(app):
 
 def _guard(app, state):
     from litetui import (
+        backend_transition,
         conversation_action,
         conversation_transition,
         native_deferred,
+        native_engine,
         native_schedule,
         native_work_execution,
     )
@@ -402,7 +404,10 @@ def _guard(app, state):
     conversation_transition.require_execution(app)
     if state.closing or state.error or getattr(app, "_gui_quitting", False):
         raise ValueError(state.error or "Runtime controls are closing")
-    app._validate_owned_execution()
+    # _validate_owned_execution without its model requirement: these are settings, not a turn.
+    native_engine.require_execution(app)
+    backend_transition.require_open(app)
+    work.validate_identity(app)
     if (native_work_execution.mutation_hold(app) or native_deferred.mutation_hold(app)
             or native_schedule.admission_refusal(app) or state.bridge.pending_readbacks):
         raise ValueError("Another owned Work mutation requires its exact readback")

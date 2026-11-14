@@ -21,8 +21,7 @@ app, switch_app = owned_app, owned_switch_app
 pytestmark = pytest.mark.asyncio
 
 
-@pytest_asyncio.fixture
-async def armed(app, monkeypatch, tmp_path):
+async def arm(app, monkeypatch, tmp_path):
     monkeypatch.setattr(paths, "PLAN_PROMPT_FILE", tmp_path / "PLAN.md")
     app._launch_options.work_lifecycle_version = 1
     app._rpc = app._gui_rpc_enabled = app._approval_host = True
@@ -34,6 +33,11 @@ async def armed(app, monkeypatch, tmp_path):
         instance=capture["instance"], activation_token=capture["activation_token"],
         scheduled_transition_version=1, execution_version=1, runtime_controls_version=1))
     return app, {"capture": capture, "activation": activation}
+
+
+@pytest_asyncio.fixture
+async def armed(app, monkeypatch, tmp_path):
+    return await arm(app, monkeypatch, tmp_path)
 
 
 def cmd(app, operation, **fields):
@@ -240,3 +244,15 @@ async def test_native_provider_refuses_host_composer_queue_without_staging(armed
             native_midturn.dispatch(app, command(app, type=operation, work_instance=bridge.instance,
                 origin={}, chord="enter", text="Unsent", profile="strict", policy_epoch=1, **command_fields))
     assert bridge.raw == before and not bridge.inputs and not bridge.producers and not app._pending_input
+
+
+@pytest.mark.parametrize("field", ["tools_enabled", "plan_mode"])
+async def test_tools_and_plan_mode_change_with_no_model_chosen(app, monkeypatch, tmp_path, field):
+    # Python's Ctrl+T and /plan are settings (misc._cmd_plan, App.action_toggle_tools): no model needed.
+    from unchosen_model import unchoose
+    unchoose(app)
+    owner, _ = await arm(app, monkeypatch, tmp_path)
+    selected = not getattr(owner, {"tools_enabled": "tools_enabled", "plan_mode": "_plan_mode"}[field])
+    _, review = await snapshot_review(owner, monkeypatch, field, selected)
+    result = await published_rpc(owner, monkeypatch, {"type": controls.PREFIX + "apply", "id": "apply", "review": review})
+    assert result["status"] == "applied", result["reason"]
