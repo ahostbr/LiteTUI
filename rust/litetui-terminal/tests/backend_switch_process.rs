@@ -154,59 +154,54 @@ fn read_catalog(runtime: &mut Interactive, app: &mut Demo) -> io::Result<()> {
         matches!(e, Observation::Backend(Update::Catalog(_)))
     })
 }
-fn select(runtime: &mut Interactive, app: &mut Demo, target: &str) -> io::Result<()> {
-    // Python's flow: pick the engine, then pick from the models it serves (no typed model).
+fn switch(runtime: &mut Interactive, app: &mut Demo, target: &str) -> io::Result<()> {
+    // Python's /backend: Enter on the engine switches it at once, the model unchosen (Ryan
+    // 2026-11-12: "/backend switches backend only /model displays models that backend provides").
     draw(app);
     let view = &mut app.live.as_mut().unwrap().backend_controls;
     let c = view.catalog.as_ref().unwrap();
     let index = c.entries.iter().position(|r| r.name == target).unwrap();
-    let revision = c.revision;
     view.key(KeyEvent::new(KeyCode::Home, KeyModifiers::NONE));
     for _ in 0..index {
         view.key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
     }
     view.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
-    let listing = view.take_intent().unwrap();
-    assert!(matches!(&listing, Intent::Models { name, .. } if name == target));
-    runtime.backend(listing)?;
-    wait(runtime, app, |e| {
-        matches!(
-            e,
-            Observation::Backend(Update::Models(_) | Update::Rejected(_))
-        )
-    })?;
-    draw(app);
-    let view = &mut app.live.as_mut().unwrap().backend_controls;
-    let row = view
-        .models
-        .as_ref()
-        .and_then(|m| m.rows.iter().position(|r| r.key == "switch-new"));
-    let intent = match row {
-        Some(row) => {
-            for _ in 0..row {
-                view.key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
-            }
-            view.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
-            if view.editing() {
-                draw(app);
-                let view = &mut app.live.as_mut().unwrap().backend_controls;
-                view.key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)); // Keep current
-                view.take_intent().unwrap()
-            } else {
-                view.take_intent().unwrap()
-            }
-        }
-        // The model vanished between listing and switch: the stale pick must still be refused by
-        // the source with no fallback, exactly as before.
-        None => Intent::Select {
-            revision,
-            name: target.into(),
-            model: "switch-new".into(),
-            context: None,
-        },
-    };
-    assert!(matches!(&intent,Intent::Select{name,model,..} if name==target&&model=="switch-new"));
+    let intent = view.take_intent().unwrap();
+    assert!(matches!(&intent, Intent::Switch { name, .. } if name == target));
     runtime.backend(intent)
+}
+/// The /model the switch opened (App._offer_unchosen_model) picks the target's model.
+fn pick_model(runtime: &mut Interactive, app: &mut Demo) -> io::Result<()> {
+    use litetui_terminal::model_controls::{Intent as Control, Kind, Update as Menu};
+    let open = app.live.as_mut().unwrap().controls.take_intent();
+    assert!(
+        matches!(open, Some(Control::Open(Kind::Model))),
+        "/model is offered after /backend"
+    );
+    runtime.control(open.unwrap())?;
+    let revision = std::cell::Cell::new(None);
+    wait(runtime, app, |e| match e {
+        Observation::Controls(Menu::Choices(menu)) => {
+            assert!(
+                menu.current.is_empty(),
+                "no model is current after /backend"
+            );
+            assert!(menu.rows.iter().any(|r| r.value == "switch-new"));
+            revision.set(Some(menu.revision));
+            true
+        }
+        _ => false,
+    })?;
+    runtime.control(Control::Select {
+        revision: revision.get().unwrap(),
+        value: "switch-new".into(),
+        context: None,
+    })?;
+    wait(
+        runtime,
+        app,
+        |e| matches!(e, Observation::Controls(Menu::Choices(menu)) if menu.current == "switch-new"),
+    )
 }
 fn inspect_settings(runtime: &mut Interactive, app: &mut Demo) -> io::Result<()> {
     app.open_settings();
@@ -235,8 +230,22 @@ fn commands(root: &std::path::Path) -> Vec<Value> {
         .map(|s| serde_json::from_str(s).unwrap())
         .collect()
 }
-fn scenario(initial: &str, target: &str, case: &str, success: bool, retry: bool) {
+/// What Python's /backend does in each case (App.apply_backend_change, measured through the
+/// actual source with tests/test_rust_backend_switch_process.py).
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Outcome {
+    /// Saved and connected: /model opens, the pick and the next prompt reach the target.
+    Switched,
+    /// Saved, but the backend did not answer: the seat stays on it, disconnected, no model.
+    Disconnected,
+    /// Refused before anything changed; the session goes on.
+    Refused,
+    /// Published but uncertain: the session closes.
+    Closed,
+}
+fn scenario(initial: &str, target: &str, case: &str, outcome: Outcome, retry: bool) {
     let (runtime, root) = launch(initial, target, case);
+    let switched = outcome == Outcome::Switched;
     let mut changed = false;
     let mut refused = false;
     let result = runtime.with_cleanup(|runtime| {
@@ -244,7 +253,7 @@ fn scenario(initial: &str, target: &str, case: &str, success: bool, retry: bool)
         app.insert_text("UNSENT HUMAN DRAFT");
         wait(runtime, &mut app, |e| matches!(e, Observation::Ready))?;
         inspect_settings(runtime, &mut app)?;
-        if success && initial == "custom" && case != "empty" {
+        if switched && initial == "custom" && case != "empty" {
             submit(runtime, &mut app, "Explicit pre-switch prompt")?;
         }
         let before_rows = app.live.as_ref().unwrap().rows.len();
@@ -258,7 +267,7 @@ fn scenario(initial: &str, target: &str, case: &str, success: bool, retry: bool)
             .session
             .clone();
         read_catalog(runtime, &mut app)?;
-        select(runtime, &mut app, target)?;
+        switch(runtime, &mut app, target)?;
         loop {
             let event = next(runtime)?;
             let got_change = matches!(&event, Observation::BackendChanged(_));
@@ -291,7 +300,7 @@ fn scenario(initial: &str, target: &str, case: &str, success: bool, retry: bool)
                 if retry {
                     app.live.as_mut().unwrap().backend_controls.close();
                     read_catalog(runtime, &mut app)?;
-                    select(runtime, &mut app, target)?;
+                    switch(runtime, &mut app, target)?;
                     continue;
                 }
                 return Ok(());
@@ -300,7 +309,7 @@ fn scenario(initial: &str, target: &str, case: &str, success: bool, retry: bool)
                 changed = true;
                 let chat = app.live.as_ref().unwrap();
                 assert_eq!(chat.backend, target);
-                assert_eq!(chat.model, "switch-new");
+                assert_eq!(chat.model, "", "/backend leaves the model unchosen");
                 assert_eq!(chat.rows.len(), before_rows);
                 assert_eq!(
                     chat.runtime_state.startup().unwrap().session,
@@ -320,7 +329,17 @@ fn scenario(initial: &str, target: &str, case: &str, success: bool, retry: bool)
                 break;
             }
         }
-        assert!(success, "Unexpected completed switch: {case}");
+        assert!(
+            matches!(outcome, Outcome::Switched | Outcome::Disconnected),
+            "Unexpected completed switch: {case}"
+        );
+        if !switched {
+            // Nothing to pick from a backend that did not answer, and Python offers no /model.
+            assert!(app.live.as_mut().unwrap().controls.take_intent().is_none());
+            return Ok(());
+        }
+        pick_model(runtime, &mut app)?;
+        assert_eq!(app.live.as_ref().unwrap().model, "switch-new");
         inspect_settings(runtime, &mut app)?;
         submit(runtime, &mut app, "Explicit next prompt")?;
         assert_eq!(app.composer.text(), "UNSENT HUMAN DRAFT");
@@ -332,20 +351,23 @@ fn scenario(initial: &str, target: &str, case: &str, success: bool, retry: bool)
         format!("{result:?}"),
     )
     .unwrap();
-    if success || ["held", "oversized-history"].contains(&case) {
+    if outcome == Outcome::Closed {
+        assert!(
+            result.is_err(),
+            "{case} must close after uncertain transition"
+        );
+    } else {
         assert!(
             result.is_ok(),
             "{case} {initial}->{target}: {result:?} at {}",
             root.display()
         );
-    } else {
-        assert!(
-            result.is_err(),
-            "{case} must close after uncertain transition"
-        );
     }
-    assert_eq!(changed, success);
-    if retry || case == "held" {
+    assert_eq!(
+        changed,
+        matches!(outcome, Outcome::Switched | Outcome::Disconnected)
+    );
+    if retry || outcome == Outcome::Refused {
         assert!(refused);
     }
     let sent = commands(&root);
@@ -354,12 +376,24 @@ fn scenario(initial: &str, target: &str, case: &str, success: bool, retry: bool)
         .filter(|c| c["type"] == "gui.backend.set")
         .count();
     assert_eq!(mutations, if retry { 2 } else { 1 });
+    // The switch names no model; /model picks it afterwards.
+    assert!(
+        sent.iter()
+            .filter(|c| c["type"] == "gui.backend.set")
+            .all(|c| c["model"].is_null() && c.get("context").is_none())
+    );
+    assert_eq!(
+        sent.iter()
+            .filter(|c| c["type"] == "gui.models.select")
+            .count(),
+        usize::from(switched)
+    );
     let prompts = sent.iter().filter(|c| c["type"] == "prompt").count();
     assert_eq!(
         prompts,
-        if success && initial == "custom" && case != "empty" {
+        if switched && initial == "custom" && case != "empty" {
             2
-        } else if success || case == "oversized-history" {
+        } else if switched || case == "oversized-history" {
             1
         } else {
             0
@@ -388,13 +422,16 @@ fn scenario(initial: &str, target: &str, case: &str, success: bool, retry: bool)
             .canonicalize()
             .unwrap()
     );
-    if success {
-        assert!(report["denied"].as_array().unwrap().is_empty());
+    assert!(report["denied"].as_array().unwrap().is_empty());
+    if changed {
         assert_eq!(report["after"]["backend"], target);
         assert_eq!(
             report["before"]["session_id"],
             report["after"]["session_id"]
         );
+    }
+    if switched {
+        assert_eq!(report["after"]["model"], "switch-new");
         assert_eq!(report["requests"].as_array().unwrap().len(), prompts);
         if case == "oversized-history" {
             let complete_large_answer = "X".repeat(2200 * 1024);
@@ -419,6 +456,8 @@ fn scenario(initial: &str, target: &str, case: &str, success: bool, retry: bool)
                     .any(|v| v["content"] == "History before backend switch")
             );
         }
+    } else {
+        assert!(report["requests"].as_array().unwrap().len() == prompts);
     }
 }
 #[test]
@@ -429,45 +468,91 @@ fn owned_backend_switch_preserves_draft_history_and_routes_next_explicit_prompt(
         ("custom", "llamacpp"),
         ("claude", "lmstudio"),
     ] {
-        scenario(initial, target, "success", true, false);
+        scenario(initial, target, "success", Outcome::Switched, false);
     }
 }
 #[test]
 #[ignore = "controlled source stale selection; dependency Python required"]
 fn owned_backend_switch_stale_selection_requires_refresh_and_fresh_confirmation() {
-    scenario("custom", "lmstudio", "one-shot-stale", true, true);
+    scenario(
+        "custom",
+        "lmstudio",
+        "one-shot-stale",
+        Outcome::Switched,
+        true,
+    );
 }
 #[test]
 #[ignore = "controlled actual held input refusal; dependency Python required"]
 fn owned_backend_switch_held_input_refusal_preserves_current_connection() {
-    scenario("custom", "lmstudio", "held", false, false);
+    scenario("custom", "lmstudio", "held", Outcome::Refused, false);
 }
 #[test]
 #[ignore = "controlled owned backend failures/readback drift; dependency Python required"]
 fn owned_backend_switch_failures_and_contradictory_readback_never_publish_changed() {
     for (case, initial, target) in [
-        ("connection-failed", "custom", "lmstudio"),
         ("persistence-failed", "custom", "lmstudio"),
-        ("cleanup-failed", "claude", "lmstudio"),
         ("policy-drift", "custom", "lmstudio"),
         ("history-drift", "custom", "lmstudio"),
-        ("missing-model", "custom", "lmstudio"),
-        ("llama-dead", "custom", "llamacpp"),
     ] {
-        scenario(initial, target, case, false, false);
+        scenario(initial, target, case, Outcome::Closed, false);
     }
+}
+#[test]
+#[ignore = "controlled unanswered backends and SDK cleanup; dependency Python required"]
+fn owned_backend_switch_goes_on_as_python_when_the_backend_or_old_cleanup_fails() {
+    // App.apply_backend_change: a backend that does not answer leaves the seat on it,
+    // disconnected; an old native session's cleanup failure is reported, not fatal.
+    scenario(
+        "custom",
+        "lmstudio",
+        "connection-failed",
+        Outcome::Disconnected,
+        false,
+    );
+    scenario(
+        "custom",
+        "llamacpp",
+        "llama-dead",
+        Outcome::Disconnected,
+        false,
+    );
+    scenario(
+        "claude",
+        "lmstudio",
+        "cleanup-failed",
+        Outcome::Switched,
+        false,
+    );
+}
+#[test]
+#[ignore = "controlled model-naming switch; dependency Python required"]
+fn owned_backend_switch_that_names_a_model_is_refused_and_the_session_goes_on() {
+    scenario(
+        "custom",
+        "lmstudio",
+        "missing-model",
+        Outcome::Refused,
+        false,
+    );
 }
 
 #[test]
 #[ignore = "controlled fresh owned pending session; dependency Python required"]
 fn owned_backend_switch_accepts_empty_pending_conversation_without_materializing_input() {
-    scenario("custom", "lmstudio", "empty", true, false);
+    scenario("custom", "lmstudio", "empty", Outcome::Switched, false);
 }
 
 #[test]
 #[ignore = "controlled oversized owned history; dependency Python required"]
 fn large_saved_history_backend_switch_uses_full_context_proof_and_keeps_draft() {
-    scenario("custom", "lmstudio", "oversized-history", true, false);
+    scenario(
+        "custom",
+        "lmstudio",
+        "oversized-history",
+        Outcome::Switched,
+        false,
+    );
 }
 
 #[test]

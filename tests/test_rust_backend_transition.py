@@ -691,3 +691,23 @@ async def test_backend_only_switch_offers_the_model_picker_once_a_session(switch
     assert first["status"] == "switched" and first["offer_model_picker"] is True, first
     second = await gui_rpc.async_dispatch(app, command(app, name="custom", model=None))
     assert second["status"] == "switched" and second["offer_model_picker"] is False, second
+
+
+@pytest.mark.asyncio
+async def test_an_unchosen_model_is_an_owned_identity_for_work_records_and_cleanup(switch_app, monkeypatch):
+    """After /backend the model stays unchosen until /model, so everything that checks identity
+    in between must accept it. Measured in the controlled backend_switch_process suite: /model
+    was refused ("No model chosen for lmstudio"), the Work recapture after the pick rejected its
+    own ledger, and quitting failed ("Selected model disagrees with owned agent authority")."""
+    from litetui import background_input as work
+    app = switch_app
+    monkeypatch.setattr(app, "system_message", lambda *_: None)
+    monkeypatch.setattr(app, "update_header", lambda: None)
+    result = await gui_rpc.async_dispatch(app, command(app, model=None))
+    assert result["status"] == "switched", result
+    owner = work.identity(app)
+    assert owner["model"] == "" and app._agent_session.authority.model is None
+    app._validate_owned_authority()
+    document = {"version": work.VERSION, "identity": owner, "instance": "0" * 64,
+                "provider": "host", "revision": 0, "producers": [], "inputs": []}
+    work.validate_document(document)

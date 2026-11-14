@@ -52,10 +52,14 @@ def launch(tmp_path, *, case="success", initial="custom", target="lmstudio", thi
 def test_actual_switch_preserves_owned_history_and_routes_only_next_explicit_prompt(tmp_path, initial, target):
     report, _root = launch(tmp_path, initial=initial, target=target)
     result, before, after = report["result"], report["before"], report["after"]
-    assert result["status"] == "connected" and result["mutated"] and not result["close_required"]
+    # /backend switches the backend only; /model picks the model (Ryan 2026-11-12).
+    assert result["status"] == "switched" and result["mutated"] and not result["close_required"]
+    assert result["model"] is None and result["connected"] is True and result["offer_model_picker"] is True
     assert before["session_id"] == after["session_id"] and before["agent_id"] == after["agent_id"]
     assert after["backend"] == after["runtime_backend"] == target
-    assert after["model"] == after["runtime_model"] == "switch-new"
+    assert after["model"] is None and after["runtime_model"] == ""
+    picked = report["after_pick"]
+    assert picked["backend"] == target and picked["model"] == picked["runtime_model"] == "switch-new"
     assert after["thinking"] == before["thinking"] == "default"
     assert after["cli_model"] is None and after["cli_backend"] is None
     assert report["old_client_closed"]
@@ -71,7 +75,8 @@ def test_actual_switch_preserves_owned_history_and_routes_only_next_explicit_pro
     contents = [message.get("content") for message in report["requests"][0]["messages"]]
     assert "History before backend switch" in contents and "Explicit next prompt" in contents
     saved = report["saved_agent"]
-    assert saved["execution"]["backend"] == target and saved["execution"]["model"] == "switch-new"
+    assert saved["execution"]["backend"] == target and saved["execution"]["model"] is None
+    assert report["requests"][0]["backend"] == target and report["requests"][0]["model"] == "switch-new"
     if initial == "claude":
         effects = [row["effect"] for row in report["calls"]]
         assert effects.count("native-close-start") == effects.count("native-close-end") == 1
@@ -89,35 +94,43 @@ def test_prepublication_refusal_preserves_identity_and_transcript(tmp_path, case
         assert report["held"][0]["content"] == "UNSENT HELD INPUT"
 
 
-@pytest.mark.parametrize("case", ["connection-failed", "persistence-failed"])
-def test_postpublication_failure_requires_close_and_blocks_late_prompt(tmp_path, case):
-    report, _root = launch(tmp_path, case=case)
+def test_postpublication_failure_requires_close_and_blocks_late_prompt(tmp_path):
+    report, _root = launch(tmp_path, case="persistence-failed")
     assert report["result"]["status"] == "failed"
     assert report["result"]["mutated"] and report["result"]["close_required"]
     assert report["requests"] == [] and report["failure_latch"]
     assert all(message.get("content") != "Must not dispatch" for message in report["messages"])
 
 
-def test_native_cleanup_failure_never_releases_target_for_prompt(tmp_path):
+@pytest.mark.parametrize("case,target", [("connection-failed", "lmstudio"), ("llama-dead", "llamacpp")])
+def test_a_backend_that_does_not_answer_leaves_the_seat_on_it_disconnected(tmp_path, case, target):
+    # App.apply_backend_change: the switch is saved and Python stays on the new backend,
+    # disconnected, with no model chosen. Connect-only: nothing is spawned, started or loaded.
+    report, _root = launch(tmp_path, case=case, target=target)
+    result = report["result"]
+    assert result["status"] == "switched" and result["mutated"] and not result["close_required"]
+    assert result["connected"] is False and result["offer_model_picker"] is False
+    assert report["after"]["backend"] == report["after"]["runtime_backend"] == target
+    assert report["after"]["model"] is None and report["after"]["runtime_model"] == ""
+    assert "model_pick" not in report and not report["failure_latch"]
+    assert report["requests"] == []
+
+
+def test_native_cleanup_failure_is_reported_and_the_switch_goes_on_as_in_python(tmp_path):
+    # claude_backend.settle_close returns cleanup failures as text so every caller says what
+    # happened and carries on; /backend (App.apply_backend_change) does not stop on them.
     report, _root = launch(tmp_path, case="cleanup-failed", initial="claude")
-    assert report["result"]["status"] == "failed" and report["result"]["close_required"]
-    assert report["requests"] == []
+    assert report["result"]["status"] == "switched" and not report["result"]["close_required"]
     assert sum(row["effect"] == "native-close-end" for row in report["calls"]) == 1
-
-
-def test_new_llama_backend_never_spawns_or_falls_back_to_another_endpoint(tmp_path):
-    report, _root = launch(tmp_path, case="llama-dead", target="llamacpp")
-    assert report["result"]["status"] in {"refused", "failed"}
-    assert report["requests"] == []
+    assert [row["backend"] for row in report["requests"]] == ["lmstudio"]
 
 
 def test_switch_never_silently_changes_incompatible_thinking(tmp_path):
     report, _root = launch(tmp_path, case="thinking", thinking="high")
-    # A switch that fails its checks before publication is a refusal: the session stays
-    # usable (cc57c5a9, Ryan's LM Studio switch that ended his session, 2026-11-12).
-    assert report["result"]["status"] == "refused" and not report["result"]["close_required"]
-    assert not report["result"]["mutated"] and report["home_unchanged"]
+    # The level last used on lmstudio comes back with it, else the current one stays: "high".
+    assert report["result"]["status"] == "switched" and not report["result"]["close_required"]
     assert report["before"]["thinking"] == report["after"]["thinking"] == "high"
+    assert report["after_pick"]["model"] == "switch-new"
     assert report["requests"] == []
 
 

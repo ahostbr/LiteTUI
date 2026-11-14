@@ -187,7 +187,7 @@ async def serve(app):
                 app._pending_input.append({"content": "UNSENT HELD INPUT", "source": "queued", "tool_profile": "strict"})
             with patch.object(settings_service, "_write", write):
                 value = await gui_rpc.async_dispatch(app, cmd)
-            transitioned = value.get("status") == "connected"
+            transitioned = value.get("status") in {"connected", "switched"}
             return value
         value = await gui_rpc.async_dispatch(app, cmd)
         if transitioned and case == "policy-drift" and cmd["type"] == "gui.state":
@@ -252,7 +252,7 @@ async def serve(app):
                 else:
                     cmd = {"type": "gui.backend.set", "id": "switch-operation", "version": 1,
                            "session_id": app.convo_id, "agent_id": before["agent_id"],
-                           "snapshot": catalog["snapshot"], "name": target, "model": new_model}
+                           "snapshot": catalog["snapshot"], "name": target, "model": None}
                     result = await management(cmd)
                     after = identity(app)
                     report = {"before": before, "after": after, "catalog": catalog, "result": result,
@@ -262,10 +262,14 @@ async def serve(app):
                               "held": list(app._pending_input),
                               "saved_agent": json.loads((app._agent_session.memory_root / "settings.json").read_text()),
                               "failure_latch": getattr(app, "_backend_transition_error", None)}
-                    if result["status"] == "connected":
+                    if result["status"] == "switched":
                         report["state"] = await gui_rpc.async_dispatch(app, {"type": "gui.state", "id": "after-state", "include_conversations": False})
                         report["history"] = await gui_rpc.async_dispatch(app, {"type": "gui.conversations.read", "id": "after-history", "session_id": app.convo_id})
                         report["after_catalog"] = await gui_rpc.async_dispatch(app, {"type": "gui.backends.list", "id": "after-catalog", "session_id": app.convo_id})
+                        # /backend leaves the model unchosen; /model picks one (Ryan 2026-11-12).
+                        if result["connected"]:
+                            report["model_pick"] = await gui_rpc.async_dispatch(app, {"type": "gui.models.select", "id": "after-pick", "slug": new_model})
+                            report["after_pick"] = identity(app)
                         rpc._dispatch(app, {"type": "prompt", "id": "after-switch-prompt", "message": "Explicit next prompt", "tool_profile": "strict"})
                         await hook_host.drain_lifecycle(app)
                         await asyncio.wait_for(settle_workers(app), 8)

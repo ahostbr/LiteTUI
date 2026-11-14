@@ -1390,7 +1390,7 @@ def validate_document(document):
     canonical_id(owner["session_id"])
     canonical_id(owner["agent_id"])
     text(owner["backend"], 64)
-    text(owner["model"], 1024)
+    model_text(owner["model"])
     _hash(document["instance"])
     if document["provider"] not in {"host", "codex", "claude"}:
         raise ValueError("Malformed Work provider identity")
@@ -1436,7 +1436,7 @@ def validate_document(document):
         if any(epoch["identity"][key] != owner[key] for key in ("session_id", "agent_id")):
             raise ValueError("Foreign recovered Work epoch")
         text(epoch["identity"]["backend"], 64)
-        text(epoch["identity"]["model"], 1024)
+        model_text(epoch["identity"]["model"])
         if epoch["provider"] not in {"host", "codex", "claude"}:
             raise ValueError("Malformed recovered Work provider")
         i, payload = row["input"], row["payload"]
@@ -1673,7 +1673,7 @@ def deferred_document(app):
     if epoch["identity"]["agent_id"] != row["target"]["agent_id"] or epoch["provider"] not in {"host", "codex", "claude"}:
         raise ValueError("Foreign deferred job producer epoch")
     text(epoch["identity"]["backend"], 64)
-    text(epoch["identity"]["model"], 1024)
+    model_text(epoch["identity"]["model"])
     text(row["job_snapshot"], LIMITS["payload_bytes"])
     if digest(row["job_snapshot"].encode("utf-8")) != row["job_sha256"] or type(strict_json(row["job_snapshot"])) is not dict:
         raise ValueError("Deferred job snapshot changed")
@@ -1734,7 +1734,7 @@ def deferred_document(app):
         canonical_id(retired["session_id"])
         canonical_id(retired["agent_id"])
         text(retired["backend"], 64)
-        text(retired["model"], 1024)
+        model_text(retired["model"])
         if any(retired[key] != row["target"][key] for key in ("session_id", "agent_id")):
             raise ValueError("Deferred retirement belongs to another owned target")
     return raw, document

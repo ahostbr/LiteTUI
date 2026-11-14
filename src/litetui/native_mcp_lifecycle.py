@@ -270,7 +270,8 @@ def activated(app, value):
 
 
 def _same_owner(app, state):
-    app._validate_owned_identity()
+    # After /backend the model is unchosen and /model is how one is chosen (Ryan 2026-11-12).
+    work.validate_identity(app)
     if (
         not enabled(app)
         or state is not _state(app)

@@ -9266,7 +9266,8 @@ class LiteTUI(App):
         authority = session.authority  # independently rechecks the lease and disk authority
         if getattr(self.backend, 'name', None) != authority.backend:
             raise llm_backend.BackendError('Selected backend disagrees with owned agent authority')
-        if self.model_id != authority.model:
+        # model_id is "" while authority.model is None after /backend: no model chosen.
+        if (self.model_id or None) != authority.model:
             raise llm_backend.BackendError('Selected model disagrees with owned agent authority')
         if ((getattr(self, '_thinking_level', None) or 'default') != authority.thinking_level
                 or getattr(self.settings, 'thinking_level', None) != authority.thinking_level):
