@@ -35,7 +35,7 @@ skill_roots mcp_enabled mcp_disabled_servers plugins_disabled'''.split()
 # the engine is one process on this machine, so these are DEVICE settings, as the Settings tabs already say.
 # Kept per conversation they were lost on every new conversation or relaunch, which is born from the global
 # defaults (Ryan 2026-10-24: Strata context set to 100K, engine kept starting at 150K).
-_ENGINE_LAUNCH = '''ninfer_executable ninfer_artifact ninfer_max_context ninfer_max_concurrency ninfer_kv_dtype ninfer_kv_capacity ninfer_host_kv_mib ninfer_speed_preset ninfer_auto_long_anchors ninfer_derive_session_keys strata_root strata_config strata_max_context xolotl_root xolotl_config xolotl_max_context llama_cache_ram_mib llama_slot_prompt_similarity llama_cache_idle_slots'''.split()
+_ENGINE_LAUNCH = '''ninfer_executable ninfer_artifact ninfer_max_context ninfer_max_concurrency ninfer_kv_dtype ninfer_kv_capacity ninfer_host_kv_mib ninfer_speed_preset ninfer_auto_long_anchors ninfer_derive_session_keys strata_root strata_config strata_max_context xolotl_root xolotl_config xolotl_max_context llama_cache_ram_mib llama_slot_prompt_similarity llama_cache_idle_slots slot_persist_strata slot_persist_llama slot_persist_dir'''.split()
 # Strata's run options (strata_options.py): launch flags and keys, so device settings applied at the next start.
 _STRATA_OPTIONS = list(strata_options.FIELD_NAMES)
 _DEVICE = '''model_context_overrides permission_judge small_task_route subagent_route allow_local_subagents claude_executable llama_scan_litesuite llama_scan_lmstudio llama_scan_hf_cache
@@ -47,13 +47,14 @@ footer_show_tps footer_show_cache footer_task_manager footer_show_key_hints foot
 stt_model stt_mic stt_hotkey sidecar_enabled
 groq_api_key cerebras_api_key nvidia_api_key mistral_api_key github_models_token
 openrouter_api_key gemini_api_key ollama_api_key zai_api_key cloudflare_api_key
-longcat_api_key sealion_api_key anthropic_api_key anthropic_workspace_id'''.split()
+longcat_api_key sealion_api_key anthropic_api_key anthropic_workspace_id
+slot_persist_cap_gib slot_persist_replay_s'''.split()
 # seat_name is read at process start (agent_launch_context.ordinary names the next seat from the shared
 # file), so it is a DEFAULT. Filed under conversation it was saved into one conversation's snapshot and the
 # next launch never saw it (T0836).
 _DEFAULTS = ['backend_chosen', 'llama_presets', 'user_name', 'user_name_asked', 'seat_name']
 _RECONNECT = set('claude_executable custom_base_url custom_api_key_env custom_context_length lm_host ninfer_host strata_host xolotl_host llama_host backend default_model codex_native_engine pin_default_model skills_enabled skill_roots mcp_enabled mcp_disabled_servers'.split())
-_RESTART = set(_STRATA_OPTIONS) | set('strata_root strata_config strata_max_context xolotl_root xolotl_config xolotl_max_context ninfer_executable ninfer_artifact ninfer_max_context ninfer_max_concurrency ninfer_kv_dtype ninfer_kv_capacity ninfer_host_kv_mib ninfer_speed_preset ninfer_auto_long_anchors ninfer_derive_session_keys llama_executable llama_attach_hosts llama_models_max llama_cache_ram_mib llama_slot_prompt_similarity llama_cache_idle_slots plugins_disabled'.split())
+_RESTART = set(_STRATA_OPTIONS) | set('strata_root strata_config strata_max_context xolotl_root xolotl_config xolotl_max_context ninfer_executable ninfer_artifact ninfer_max_context ninfer_max_concurrency ninfer_kv_dtype ninfer_kv_capacity ninfer_host_kv_mib ninfer_speed_preset ninfer_auto_long_anchors ninfer_derive_session_keys llama_executable llama_attach_hosts llama_models_max llama_cache_ram_mib llama_slot_prompt_similarity llama_cache_idle_slots plugins_disabled slot_persist_strata slot_persist_llama slot_persist_dir'.split())
 
 SETTING_SPECS = {}
 for scope, names in ((SettingScope.CONVERSATION, _CONVERSATION),

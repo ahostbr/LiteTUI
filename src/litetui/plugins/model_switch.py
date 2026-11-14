@@ -455,6 +455,15 @@ def _cmd_engine(app, name: str, arg: str) -> None:
 
         async def _stop_work(target=backend):
             try:
+                # T1306-E: save the conversation's prompt cache while the engine is still up.
+                from litetui import prefix_persist
+
+                persist = prefix_persist.for_backend(target)
+                if persist is not None and persist.wants_save():
+                    app.system_message("Saving the conversation cache before the stop…")
+                    said = await prefix_persist.save_before_stop(app, target)
+                    if said:
+                        app.system_message(said)
                 app.system_message(await agent_preparation.await_preparation(target.stop_engine))
             except asyncio.CancelledError:
                 raise                       # await_preparation already joined the thread

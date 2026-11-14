@@ -955,6 +955,37 @@ class SettingsBody(Widget):
                             "On moves it to the RAM cache on every new request and copies it back. "
                             "Applies on the router's next start.",
                         )
+                        yield self._section_header("model-slot-persist")
+                        yield from self._switch_row(
+                            "slot_persist_strata", "Strata: keep the prompt cache across restarts",
+                            "On by default. When LiteTUI stops the Strata engine it started (quit or /engine stop), the "
+                            "conversation's cache is saved to disk and put back before that conversation's next request "
+                            "after the next start. The engine refuses a save from another model or configuration. "
+                            "Applies on the next /engine start.",
+                        )
+                        yield from self._switch_row(
+                            "slot_persist_llama", "llama.cpp: keep the prompt cache across restarts",
+                            "Off by default. llama.cpp b9360 refuses slot saves when a vision projector is loaded, and on "
+                            "Qwen3.5/3.8 a restored slot has no checkpoints, so the next turn re-reads anyway. Useful only for "
+                            "plain text models. Applies when LiteTUI next starts its router.",
+                        )
+                        yield from self._text_row(
+                            "slot_persist_dir", "Save folder",
+                            "Blank uses .slot-saves in LiteTUI's data folder. Only LiteTUI's own save files (lt-*) are ever "
+                            "deleted, and partial ones only in a folder LiteTUI created. A save is GBs (a 74k-token conversation is about 9.5 GiB).",
+                            placeholder="blank, or D:/litetui-cache",
+                        )
+                        yield from self._text_row(
+                            "slot_persist_cap_gib", "Size cap per engine (GiB)",
+                            "The oldest saves are deleted first once this is reached.",
+                            placeholder="32",
+                        )
+                        yield from self._text_row(
+                            "slot_persist_replay_s", "Re-read limit at a stop (s)",
+                            "At a stop the engine usually holds the last card summary, so the conversation is re-sent once "
+                            "to save it. Past this many seconds nothing is saved. Quit again or Ctrl+C to skip the save.",
+                            placeholder="10",
+                        )
 
                         # ── Generation ───────────────────────────────────────────────
                 # T893 — THE USER: "ninfer settings should have their own new tab ... next to

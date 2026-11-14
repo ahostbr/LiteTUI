@@ -62,6 +62,8 @@ skills/index.json
 # Stray editor/tool backups.
 *.bak*
 .llama/
+# Saved engine prompt caches (prefix_persist.py): GBs each, per machine.
+.slot-saves/
 e2e/artifacts/
 # Prior-session agent scratch and session-private tooling — untracked by
 # adjudication (Sentinel-delegated, 2026-08-21): not LiteTUI deliverables,

@@ -59,6 +59,17 @@ class OwnedEngineLifecycle(_VramGate):
             self._stopping = True
             return True
 
+    def _persist_event(self, event: str) -> None:
+        """`note_start` / `note_stopped` on the backend's prompt-cache persistence, if it has one
+        (T1306-E: Strata). Never raises: bookkeeping must not fail a start or a stop."""
+        persist = getattr(self, "slot_persistence", None)
+        if persist is None:
+            return
+        try:
+            getattr(persist, event)()
+        except Exception:  # noqa: BLE001 - see docstring
+            pass
+
     def end_stop(self) -> None:
         with self._lifecycle_lock:
             self._stopping = False
@@ -103,6 +114,7 @@ class OwnedEngineLifecycle(_VramGate):
                 if self._owned is owned:                  # same object -> clear owned + host together
                     self._owned = None
                     self._host = None
+            self._persist_event("note_stopped")
         return result
 
     # -- freeing the seat for a GPU job (studio / listen tools, T0702) --------------
@@ -143,6 +155,7 @@ class OwnedEngineLifecycle(_VramGate):
         else:
             with self._lifecycle_lock:
                 self._owned, self._host = owned, owned.host
+            self._persist_event("note_start")
             return None
         finally:
             with self._lifecycle_lock:
@@ -197,6 +210,7 @@ class OwnedEngineLifecycle(_VramGate):
                 with self._lifecycle_lock:
                     self._owned = owned
                     self._host = owned.host
+                self._persist_event("note_start")
                 return owned
 
             async with self.vram_guard(self._process_name):

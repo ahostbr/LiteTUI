@@ -2404,6 +2404,31 @@ class LiteTUI(App):
             return
         await await_subtree_composed(screen)
 
+    def exit(self, result=None, return_code: int = 0, message=None) -> None:
+        """Every quit (Ctrl+Q, /quit, an RPC shutdown, a relaunch) comes through here first.
+
+        T1306-E: when an engine LiteTUI started holds a conversation worth keeping, its prompt
+        cache is saved BEFORE Textual's exit takes effect, so a second quit or Ctrl+C is still
+        read and skips the save at once (prefix_persist.defer_exit). `_shutdown` is too late for
+        that: it runs after the message loop has stopped reading keys."""
+        from litetui import prefix_persist
+
+        def real_exit() -> None:
+            App.exit(self, result, return_code, message)
+
+        if prefix_persist.defer_exit(self, real_exit):
+            return
+        real_exit()
+
+    def action_help_quit(self) -> None:
+        """Ctrl+C. While the quit-time cache save runs, it skips the save and quits now."""
+        from litetui import prefix_persist
+
+        if prefix_persist.quit_save_running(self):
+            self.exit()
+            return
+        super().action_help_quit()
+
     async def _shutdown(self) -> None:
         """Settle the tree before Textual prunes it, then shut down normally.
 
@@ -9508,6 +9533,10 @@ class LiteTUI(App):
                 # No timeout here — the user is watching and asked for this
                 # turn, so a model that is loading is worth waiting out.
                 await self._ensure_chat_ready()
+                # T1306-E: before the first main request after an owned engine start, put back
+                # the saved prompt cache whose prompt is a prefix of this one (never a load).
+                from litetui import prefix_persist
+                await prefix_persist.restore_before_main(self, kwargs)
                 # A closure, not the bound method: test fakes deepcopy their
                 # kwargs, and deepcopying a bound method copies the whole app.
                 stream = await model_transport.for_app(self).create(
@@ -9875,6 +9904,10 @@ class LiteTUI(App):
             for event in rpc_deltas:
                 self._rpc_emit(event)
             _iteration += 1  # failed requests do not spend the tool-round budget
+            if request_usage is not None:
+                # T1306-E: the request a clean-stop save must cover, and the one a replay re-sends.
+                from litetui import prefix_persist
+                prefix_persist.note_main(self.backend, kwargs, request_usage)
             retry_kwargs = None
             retry_budget = model_transport.CodexRequestRetry() if recover_request else None
 
