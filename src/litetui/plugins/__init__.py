@@ -37,10 +37,15 @@ from litetui.tool_policy import MCP_UNKNOWN_POLICY, ToolPolicy
 PROMPT_ORDER = {
     "BASE": 0,          # prompts/systemprompt.md (host)
     "PLAN": 5,          # prompts/plan-mode.md, gated on plan mode (host, T558)
-    "MEMORY": 10,       # the store block (host)
     "TOOLS": 20,        # TOOLS_PROMPT, gated on tools_enabled (host)
     "DEFERRED_TOOLS": 25,  # names of tools whose schemas load on demand (tool_search plugin)
     "SKILLS_INDEX": 30, # skills index, gated on tools_enabled + skills (skills plugin)
+    # The store block (host) carries THIS conversation's id and store path, so it is the first byte two
+    # conversations or seats on one server disagree on. It sat at 10, ahead of TOOLS/DEFERRED_TOOLS/SKILLS_INDEX,
+    # and every other conversation re-read from there (T1306-D, prefix audit P7: llama.cpp forced full re-reads at
+    # lcp 3339/3808/4935; NInfer /new re-read its 17.4k system+tools prefix). Last, they share everything before it.
+    # Prompts composed at 10 are still read by store_identity's legacy reader at that slot.
+    "MEMORY": 35,
 }
 
 # THE discovery list and THE load order, one committed artifact. Filesystem
@@ -227,6 +232,7 @@ def deferred_tools_block(specs: list[dict]) -> str:
         "",
         f"{len(specs)} more tool(s) exist but their schemas are NOT loaded. Call `tool_search`",
         "with keywords (or `select:<full name>`) to load one, then call it by its full name.",
+        "A tool on this list may already be loaded; calling `tool_search` for it again is harmless.",
         "Names only:",
         "",
     ]
@@ -282,6 +288,13 @@ class PluginRegistry:
         #: its experts. Loading four built-in schemas mid-conversation cost 250 s and 281 s (measured 2026-11-08), against
         #: ~2,600 tokens once. Evaluated per call so a /model switch takes effect at once.
         self.static_resident = lambda: False
+        #: T1306-D (prefix audit P5). Names the conversation's frozen tool advertisement has not taken: a tool that became
+        #: available after the first request. Withheld counts as DEFERRED (searchable, dispatchable) until activated.
+        #: Owned by tool_advert.ToolAdvert, empty unless the backend keeps a prefix cache.
+        self.withheld: set[str] = set()
+        #: Distinct names activated since ToolAdvert last reset, in first-activation order: the order activated tools are
+        #: appended to a frozen advertisement.
+        self.activations: list[str] = []
 
     # ── registration (called via PluginContext, owner pre-bound) ──────────
 
@@ -369,6 +382,8 @@ class PluginRegistry:
         return self._offerable(deferred=False)
 
     def _is_deferred(self, name: str, dynamic: bool) -> bool:
+        if name in self.withheld:
+            return True
         if name in self.activated:
             return False
         if dynamic:
@@ -419,8 +434,14 @@ class PluginRegistry:
             scored.sort(key=lambda t: (t[0], t[1]))
             hits = [s for _, _, s in scored[:8]]
         for s in hits:
-            self.activated.add(s["function"]["name"])
+            self._activate(s["function"]["name"])
         return hits
+
+    def _activate(self, name: str) -> None:
+        self.activated.add(name)
+        self.withheld.discard(name)
+        if name not in self.activations:
+            self.activations.append(name)
 
     def dispatch_for(self, name: str):
         """Static first, then dynamic providers. Gates deliberately NOT
@@ -429,12 +450,12 @@ class PluginRegistry:
         memory rides the next request's schemas, so its arguments stay right."""
         entry = self._tool_by_name.get(name)
         if entry is not None:
-            self.activated.add(name)
+            self._activate(name)
             return entry.run
         for d in self.dynamic:
             fn = d.dispatch_fn(name)
             if fn is not None:
-                self.activated.add(name)
+                self._activate(name)
                 return fn
         return None
 
@@ -515,16 +536,22 @@ class PluginRegistry:
     def sections_sorted(self) -> list[PromptSection]:
         return sorted(self.prompt_sections, key=lambda s: s.order)
 
-    def compose_prompt(self, replace: dict[int, str] | None = None) -> str:
+    def compose_prompt(self, replace: dict[int, str] | None = None,
+                       reorder: dict[int, int] | None = None) -> str:
         """The exact historical fold: each enabled section glued with
         (base + text).strip(), in slot order. The glue is behavior — the
         model reads this every turn — so it lives in ONE place.
 
         `replace` maps a PROMPT_ORDER slot to the text that stands in for it
         ("" drops it): the Claude backend keeps this composition but brings
-        its own tool section, since its tools are Claude's built-ins."""
+        its own tool section, since its tools are Claude's built-ins.
+
+        `reorder` maps a slot to the position it is folded at, to rebuild a
+        prompt composed under an older PROMPT_ORDER (seat_prompts.rehydrate)."""
         base = ""
-        for s in self.sections_sorted():
+        sections = (sorted(self.prompt_sections, key=lambda s: reorder.get(s.order, s.order))
+                    if reorder else self.sections_sorted())
+        for s in sections:
             if replace and s.order in replace:
                 base = (base + replace[s.order]).strip()
             elif s.enabled is None or s.enabled():

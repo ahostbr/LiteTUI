@@ -321,7 +321,11 @@ def rehydrate(app) -> bool:
             host = messages[1]
             old_base = host.get("litetui_prompt_base")
             if not isinstance(old_base, str):
-                old_base = app._with_ordinary_instructions(app.plugins.compose_prompt()) + (
+                # A host message without a recorded base predates T0338, so its MEMORY sat at the legacy slot.
+                from litetui.plugins import PROMPT_ORDER
+                from litetui.store_identity import LEGACY_MEMORY_ORDER
+                old_base = app._with_ordinary_instructions(app.plugins.compose_prompt(
+                    reorder={PROMPT_ORDER["MEMORY"]: LEGACY_MEMORY_ORDER})) + (
                     "\n\nEnd each FINAL answer with <recap>two short lines: what you did and result, about 40 tokens</recap>. Do not put this tag in interim tool calls.")
             if not isinstance(host.get("content"), str) or not host["content"].startswith(old_base):
                 raise prompts.PromptError("Legacy host prefix cannot be proved; launch migration refused")

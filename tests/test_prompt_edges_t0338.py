@@ -163,7 +163,8 @@ def test_empty_ordinary_host_boundary_is_reloadable():
     assert "Shared-worktree caveat" in app._request_messages()[0]["content"]
     layer(app._agent_session.memory_root, "ordinary-instructions.md", "restored ordinary")
     prompts.refresh(app)
-    assert "restored ordinary\n\n" in app._request_messages()[0]["content"]
+    # T1306-D: the tools section, not the store block, now follows BASE (its glue is "\n" + tools.md).
+    assert "restored ordinary\n" + app._ordinary_prompt_text("tools").strip()[:40] in app._request_messages()[0]["content"]
 
 
 def test_seat_text_is_removed_at_owned_trailing_boundary_only():

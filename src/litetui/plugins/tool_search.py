@@ -30,14 +30,14 @@ def _run(reg, args: dict, mcp=None) -> str:
     query = str(args.get("query") or "").strip()
     if not query:
         return "[error] tool_search: a query is required (keywords, or select:<name>)"
-    before = set(reg.activated)
+    before = (set(reg.activated), set(reg.withheld), list(reg.activations))
     hits = reg.search_tools(query)
     if mcp is not None:
         try:
             error = mcp.load_tools(query, hits)
         except Exception as exc:
             error = f"[error] tool_search MCP startup: {type(exc).__name__}: {exc}"
-        reg.activated = before
+        reg.activated, reg.withheld, reg.activations = before
         if error:
             return error
         # Read live schemas after starting: a cached tool can have disappeared.
@@ -69,11 +69,16 @@ def _register(ctx) -> None:
     # Names only; the schemas load through the tool above. Gated on tools_enabled
     # for the same reason the skills index is: without the tool the list would
     # advertise things the model has no way to open.
-    ctx.prompt_section(
-        PROMPT_ORDER["DEFERRED_TOOLS"],
-        lambda: deferred_tools_block(reg.deferred_specs()) + lazy_block(),
-        enabled=lambda: app.tools_enabled and bool(reg.deferred_specs() or lazy_block()),
-    )
+    def live():
+        return (deferred_tools_block(reg.deferred_specs()) + lazy_block()
+                if app.tools_enabled and (reg.deferred_specs() or lazy_block()) else "")
+
+    # T1306-D: frozen per conversation on a prefix-cache backend (litetui.tool_advert); live elsewhere.
+    def render():
+        advert = getattr(app, "_tool_advert", None)
+        return advert.deferred(app, live) if advert is not None else live()
+
+    ctx.prompt_section(PROMPT_ORDER["DEFERRED_TOOLS"], render, enabled=lambda: bool(render()))
 
 
 PLUGIN = PluginManifest(id="tool_search", register=_register)

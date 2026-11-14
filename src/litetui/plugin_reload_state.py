@@ -112,4 +112,6 @@ def transfer_session_state(live: PluginRegistry, candidate: PluginRegistry) -> N
     candidate.deferred_static = live.deferred_static  # frozenset: immutable, safe to share
     candidate.defer_dynamic = live.defer_dynamic
     candidate.static_resident = live.static_resident
+    candidate.withheld = set(live.withheld)            # T1306-D: the conversation's frozen tool advertisement
+    candidate.activations = list(live.activations)
     candidate.tools_disabled = live.tools_disabled    # the live provider, intentionally shared

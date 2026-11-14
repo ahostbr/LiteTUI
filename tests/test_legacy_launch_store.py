@@ -5,6 +5,7 @@ from pathlib import Path
 import pytest
 from test_owner_resume import build as _build
 from test_owner_resume import folder
+from _legacy_slot import compose_at_legacy_slot
 
 from litetui import appsvc
 from litetui.app import LiteTUI
@@ -50,6 +51,7 @@ async def legacy_fixture(tmp_path, monkeypatch, build, owner, backend, suffix, l
         # would no longer test legacy provenance at all.
         first._cli_system_prompt = launch
         (first._agent_session.memory_root / "prompts" / "role.md").write_text(launch, encoding="utf-8")
+        compose_at_legacy_slot(first)  # a pre-T0338 host prompt has MEMORY at slot 10
         host = first.plugins.compose_prompt() + (
             "\n\nEnd each FINAL answer with <recap>two short lines: what you did and result, about 40 tokens</recap>. Do not put this tag in interim tool calls.")
         first.conversation[:] = [{"role": "system", "content": launch}, {"role": "system", "content": host}]
