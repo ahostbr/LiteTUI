@@ -747,6 +747,8 @@ fn handle_key(
     if input.suppress_live_repeat(event) {
         return false;
     }
+    // Textual's Input shows its cursor again on every key (_restart_blink).
+    app.cursor_blink_from = Some(std::time::Instant::now());
     // A source question preempts every lower panel, including panels with
     // outstanding readbacks. One chord can read and edit only its focused note.
     if app.has_live_question() {
@@ -973,6 +975,7 @@ fn handle_key(
 }
 
 fn paste(app: &mut Demo, text: &str) {
+    app.cursor_blink_from = Some(std::time::Instant::now());
     if app.has_live_question() {
         if !app.stop_open() && !app.viewport_too_small && !app.has_live_approval() {
             let chat = app.live.as_mut().expect("live question");

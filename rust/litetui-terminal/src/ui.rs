@@ -2301,10 +2301,26 @@ pub fn draw(frame: &mut Frame, app: &mut Demo) {
         }
     }
     if !app.approval_open && !app.has_live_input() && !app.themes_open {
-        frame.set_cursor_position((
+        let at = (
             areas[4].x + 1 + indent + (cursor_cells - input_scroll) as u16,
             areas[4].y + 1,
-        ));
+        );
+        if app.live.is_some() && !t.css.is_empty() {
+            // Textual's Input draws its cursor as a cell (`.input--cursor`:
+            // $input-cursor-foreground on $input-cursor-background) and hides the terminal's,
+            // blinking every 0.5 s from the last key (_restart_blink).
+            let from = *app.cursor_blink_from.get_or_insert_with(std::time::Instant::now);
+            let shown = (from.elapsed().as_millis() / 500).is_multiple_of(2);
+            let buf = frame.buffer_mut();
+            if shown && buf.area.contains(at.into()) {
+                buf[at].set_style(style(
+                    t.var("input-cursor-foreground", t.screen()),
+                    t.var("input-cursor-background", t.text()),
+                ));
+            }
+        } else {
+            frame.set_cursor_position(at);
+        }
     }
     let hint = if compact && presentation.key_hints {
         "^G view · ^B select · ^E open"

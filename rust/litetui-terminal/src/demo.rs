@@ -36,6 +36,9 @@ pub struct Demo {
     pub transcript_viewport: Option<(u16, u16)>,
     /// Where the title bar's ⭘ was drawn (Python's HeaderIcon opens the command palette).
     pub palette_button: Option<ratatui::layout::Rect>,
+    /// When the composer cursor's blink cycle last restarted (Textual Input._restart_blink:
+    /// shown on every key, then toggled every 0.5 s). None until the first frame.
+    pub cursor_blink_from: Option<std::time::Instant>,
     pub palette_pressed: bool,
     pub transcript_rows: Option<(usize, usize, bool)>,
     pub viewport_too_small: bool,
@@ -141,6 +144,7 @@ impl Default for Demo {
             compact_display: Default::default(),
             transcript_viewport: None,
             palette_button: None,
+            cursor_blink_from: None,
             palette_pressed: false,
             transcript_rows: None,
             viewport_too_small: false,
