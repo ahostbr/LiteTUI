@@ -38,29 +38,63 @@ def at_keyboard(app, source: str) -> bool:
             and not getattr(app, "_spawned_marker", False))
 
 
+def waiting(app) -> bool:
+    """A start this app is waiting on (any path: a send, /engine start, /engine restart)."""
+    return bool(getattr(app, "_engine_autostart", False))
+
+
 def should_hold(app, source: str) -> bool:
-    """Hold this message for an engine start: one is already under way for an earlier send,
-    or this send is the one that starts it."""
-    if getattr(app, "_engine_autostart", False):
+    """Hold this message for an engine start: one is already being waited on, or this send
+    (from a person) finds nothing serving and so starts one — or waits for a start already
+    in flight that nothing in this app is waiting on (Prefix review cda5cb84)."""
+    if waiting(app):
         return True
     return nothing_serving(app) and at_keyboard(app, source)
 
 
+def begin(app) -> None:
+    """Mark a start as waited on, so later sends queue behind it. Idempotent."""
+    app._engine_autostart = True
+    if getattr(app, "_engine_autostart_held", None) is None:
+        app._engine_autostart_held = []
+
+
+def settle(app, backend) -> bool:
+    """End the wait: send what was held if the engine now serves, else give it back.
+    Idempotent and synchronous, so a `finally` can always call it. True when it serves."""
+    if not waiting(app):
+        return False
+    app._engine_autostart = False
+    held = getattr(app, "_engine_autostart_held", None) or []
+    app._engine_autostart_held = []
+    if not held:
+        return False
+    served = app.backend is backend and not nothing_serving(app)
+    if served:
+        app._flush_pending_input()
+    else:
+        give_back(app, held)
+    return served
+
+
 def hold(app, item: dict) -> None:
-    """Queue `item` (a `_pending_input` row) and start the engine if no start is running."""
+    """Queue `item` (a `_pending_input` row); start the engine only if no start is running."""
     app._pending_input.append(item)
     held = getattr(app, "_engine_autostart_held", None)
     if held is None:
         held = app._engine_autostart_held = []
     held.append(item)
-    if getattr(app, "_engine_autostart", False):
+    if waiting(app):
         app.notify("Queued — sends once the engine is ready", timeout=3)
         return
-    app._engine_autostart = True
+    begin(app)
     backend = app.backend
     label = getattr(backend, "label", backend.name)
-    app.system_message(f"Nothing is serving on {backend.name} — starting {chosen(app)}. Your message "
-                       f"sends once {label} has loaded it; /engine stop cancels.")
+    if getattr(backend, "_starting", False):
+        app.system_message(f"A {label} start is already under way — your message sends once it has loaded.")
+    else:
+        app.system_message(f"Nothing is serving on {backend.name} — starting {chosen(app)}. Your message "
+                           f"sends once {label} has loaded it; /engine stop cancels.")
     app.run_worker(run(app, backend), exclusive=False, name="engine-autostart", exit_on_error=False)
 
 
@@ -81,31 +115,31 @@ def chosen(app) -> str:
 
 
 async def run(app, backend) -> None:
-    """Start, wait for the reconnect, then send what was held — or give it back with why."""
-    from .plugins.model_switch import start_and_connect
+    """The waiter a held send starts. Three cases, and only the last one starts anything:
+    a start already in flight (not ours) -> wait for it, reconnect, send; an engine already
+    answering that this app is not connected to -> attach and send; nothing -> start."""
+    import asyncio
 
-    ok = False
+    from .plugins.model_switch import await_reconnect, start_and_connect
+
     try:
-        started = await start_and_connect(app, backend)
-        if started:
-            wait = getattr(started, "wait", None)
-            if wait is not None:
-                try:
-                    await wait()
-                except Exception:  # noqa: BLE001 - a failed/cancelled reconnect said its own words
-                    pass
-            ok = app.backend is backend and not nothing_serving(app)
-            if not ok:
-                app.system_message(f"{getattr(backend, 'label', backend.name)} started, but no model "
-                                   "came up on the reconnect.")
-    finally:
-        app._engine_autostart = False
-        held = getattr(app, "_engine_autostart_held", None) or []
-        app._engine_autostart_held = []
-        if ok:
-            app._flush_pending_input()
+        if getattr(backend, "_starting", False):
+            while getattr(backend, "_starting", False):
+                await asyncio.sleep(0.5)
+            await await_reconnect(app.connect())
+            return
+        try:
+            await backend.ensure_running()        # read-only: is one answering already?
+        except Exception:  # noqa: BLE001 - not answering (or cannot tell): start one
+            pass
         else:
-            give_back(app, held)
+            app.system_message(f"A {getattr(backend, 'label', backend.name)} engine is already answering "
+                               "— connecting to it instead of starting one.")
+            await await_reconnect(app.connect())
+            return
+        await start_and_connect(app, backend)
+    finally:
+        settle(app, backend)
 
 
 def give_back(app, held: list[dict]) -> None:

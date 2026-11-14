@@ -505,12 +505,35 @@ def _cmd_engine(app, name: str, arg: str) -> None:
     app.run_worker(start_and_connect(app, backend), exclusive=False, name="ninfer-engine-start")
 
 
-async def start_and_connect(app, backend):
-    """Start the engine, say how the load is going, then reconnect. Falsy when the start
-    failed (its words are already said); else the reconnect's worker (or True), to await.
+async def await_reconnect(worker) -> None:
+    """Wait for a `connect()` worker to finish (a test double returns None)."""
+    wait = getattr(worker, "wait", None)
+    if wait is not None:
+        try:
+            await wait()
+        except Exception:  # noqa: BLE001 - a failed/cancelled reconnect said its own words
+            pass
 
-    The ONE start that /engine start, /engine restart and a send that auto-starts all use (T1311).
+
+async def start_and_connect(app, backend) -> bool:
+    """Start the engine, say how the load is going, reconnect, and only then let any message
+    typed meanwhile go. True once it started.
+
+    The ONE start that /engine start, /engine restart and a send that auto-starts all use
+    (T1311). It is also the waiter: a send typed while it loads queues behind it
+    (`engine_autostart.begin`) and is sent or given back when it settles — never a second
+    start (Prefix review cda5cb84).
     """
+    from litetui import engine_autostart
+
+    engine_autostart.begin(app)
+    try:
+        return await _start_then_reconnect(app, backend)
+    finally:
+        engine_autostart.settle(app, backend)
+
+
+async def _start_then_reconnect(app, backend) -> bool:
     def _starting() -> None:
         app.call_from_thread(
             app.system_message,
@@ -526,7 +549,8 @@ async def start_and_connect(app, backend):
         app.system_message(str(e))
         return False
     app.system_message(msg)
-    return app.connect() or True
+    await await_reconnect(app.connect())
+    return True
 
 
 async def _stop_and_say(app, target) -> str:
@@ -578,6 +602,9 @@ def _restart(app, backend) -> None:
         return
 
     async def _work(target=backend):
+        from litetui import engine_autostart
+
+        engine_autostart.begin(app)           # a send typed during the stop queues too
         try:
             if target._owned is None:
                 # Nothing of ours to stop: ask the stop what is there (it stops nothing it
@@ -600,6 +627,8 @@ def _restart(app, backend) -> None:
             raise
         except Exception as exc:  # noqa: BLE001 - don't crash the loop; type-only
             app.system_message(f"engine restart failed: {type(exc).__name__}")
+        finally:
+            engine_autostart.settle(app, target)   # no-op when the start already settled
 
     agent_preparation.run_guarded(app, _work(), group="ninfer-engine-restart",
                                   cleanup=backend.end_stop, report=_stop_report(app))

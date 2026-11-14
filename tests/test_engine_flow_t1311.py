@@ -524,3 +524,85 @@ def test_a_headless_or_spawned_seat_never_starts_an_engine(box, monkeypatch, how
     assert not getattr(app, "_engine_autostart", False)
     assert app.sent == ["hello"]     # the ordinary path: the turn refuses in today's words
 
+
+
+# ── Prefix review cda5cb84: a send typed while a start the person asked for is loading ──
+
+def _gated_start(starts, release, *, fail=None):
+    def start(settings, *, healthy, notice=None, progress=None, cancel=None):
+        starts.append(settings.ninfer_artifact)
+        if notice:
+            notice()
+        assert release.wait(10), "the test never released the stub start"
+        if fail:
+            raise BackendError(fail)
+        return _owned(5)
+    return start
+
+
+@pytest.mark.parametrize("verb", ["start", "restart"])
+def test_a_send_during_engine_start_queues_behind_it_and_goes_once_ready(box, monkeypatch, verb):
+    starts, release = [], threading.Event()
+    app = _send_app(box, monkeypatch, start=_gated_start(starts, release))
+
+    async def drive():
+        model_switch._cmd_engine(app, "engine", verb)
+        task = asyncio.ensure_future(app.t_workers.pop(0) if app.t_workers else asyncio.sleep(0))
+        for _ in range(200):
+            await asyncio.sleep(0.02)
+            if starts:
+                break
+        assert starts, "the stub start was never reached"
+        app._submit_text("hello", alt_chord=False)          # typed while it loads
+        assert app.t_workers == [], "the send began a second start"
+        assert app.sent == [] and [i["text"] for i in app._pending_input] == ["hello"]
+        release.set()
+        await task
+    if verb == "restart":
+        # /engine restart runs through run_guarded, which needs a worker with a real task.
+        def run_worker(coro, **kw):
+            t = asyncio.ensure_future(coro)
+            app.t_workers.append(t)
+            return SimpleNamespace(_task=t, cancel=t.cancel)
+        app.run_worker = run_worker
+    asyncio.run(drive())
+    assert starts == [box.settings.ninfer_artifact], starts         # exactly one start_engine
+    assert app.sent == ["hello"], (app.sent, app.said)
+    assert not any("not sent" in s for s in app.said), app.said
+    assert not engine_autostart.waiting(app)
+
+
+def test_a_send_during_a_start_that_fails_comes_back_to_the_input_box(box, monkeypatch):
+    starts, release = [], threading.Event()
+    app = _send_app(box, monkeypatch, start=_gated_start(starts, release, fail="ninfer-serve exited before it was ready"))
+
+    async def drive():
+        model_switch._cmd_engine(app, "engine", "start")
+        task = asyncio.ensure_future(app.t_workers.pop(0))
+        for _ in range(200):
+            await asyncio.sleep(0.02)
+            if starts:
+                break
+        app._submit_text("hello", alt_chord=False)
+        assert app.t_workers == []
+        release.set()
+        await task
+    asyncio.run(drive())
+    assert starts == [box.settings.ninfer_artifact] and app.sent == []
+    assert any("exited before it was ready" in s for s in app.said), app.said
+    assert app.input_box.value == "hello" and app._pending_input == []
+    assert not engine_autostart.waiting(app)
+
+
+def test_a_send_with_an_answering_engine_not_yet_connected_attaches_instead_of_starting(box, monkeypatch):
+    starts = []
+    app = _send_app(box, monkeypatch, start=lambda *a, **k: starts.append(1))
+
+    async def answering(self):
+        return "ok"
+    monkeypatch.setattr(NInferBackend, "ensure_running", answering)
+    app._submit_text("hello", alt_chord=False)
+    _run_workers(app)
+    assert starts == [], "a start was attempted beside an engine that was answering"
+    assert app.sent == ["hello"], (app.sent, app.said)
+    assert any("already answering" in s and "connecting to it" in s for s in app.said), app.said
