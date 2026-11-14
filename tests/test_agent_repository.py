@@ -100,17 +100,19 @@ def test_released_agent_blocks_every_repository_mutation(owned, monkeypatch):
     assert not repository.convo_dir.exists()
 
 
-def test_legacy_absent_context_keeps_original_paths_and_seeds(tmp_path, monkeypatch):
+def test_legacy_absent_context_refuses_to_stage_and_writes_nothing(tmp_path, monkeypatch):
+    """Without an owned agent the legacy .convos store is read-only: staging refuses and
+    nothing is created (e52007fe, 2026-10-04, replaced e6df30fd's legacy staging)."""
     monkeypatch.setattr(paths, 'CONVO_DIR', tmp_path / '.convos')
     roots = []
     monkeypatch.setattr(shared_state, 'check_data_version', lambda root: roots.append(root))
     repository = ConversationRepository()
     try:
-        repository.stage('legacy-id')
-        repository.seed()
-        assert repository.convo_dir == tmp_path / '.convos' / 'legacy-id'
-        assert (repository.convo_dir / 'memory.md').exists()
-        assert roots == [tmp_path]
+        with pytest.raises(agent_store.StoreError, match='owned agent session is required to stage'):
+            repository.stage('legacy-id')
+        assert repository.convo_dir is None
+        assert not (tmp_path / '.convos').exists()
+        assert roots == []
     finally:
         repository.release()
 
