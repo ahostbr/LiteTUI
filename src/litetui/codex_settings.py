@@ -36,6 +36,7 @@ CONTROLS = {
             "lmstudio_graded_thinking_models", "llama_executable", "llama_host",
             "llama_attach_hosts", "llama_scan_litesuite", "llama_scan_lmstudio",
             "llama_scan_hf_cache", "llama_models_dirs", "llama_models_max",
+            "llama_cache_ram_mib", "llama_slot_prompt_similarity", "llama_cache_idle_slots",
             "custom_base_url", "custom_api_key_env", "custom_context_length",
         ),
         LOCAL_SERVER,

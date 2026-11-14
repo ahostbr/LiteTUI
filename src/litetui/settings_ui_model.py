@@ -134,6 +134,9 @@ FIELD_DESCRIPTIONS = {
     "llama_scan_hf_cache": "Include the Hugging Face cache when looking for local GGUF files.",
     "llama_models_dirs": "Extra folders to search for GGUF model files.",
     "llama_models_max": "Maximum llama.cpp models kept loaded at once; more models need more memory.",
+    "llama_cache_ram_mib": "MiB of system RAM our llama.cpp router keeps for saved conversations; applies on its next start.",
+    "llama_slot_prompt_similarity": "How much of a request must match a slot's conversation to reuse it; 0.5 keeps short side calls out.",
+    "llama_cache_idle_slots": "Off keeps an idle conversation in GPU memory while another request runs; applies on the router's next start.",
     "lms_load_timeout_s": "Seconds to wait for an LM Studio load before giving up; large models may need longer.",
     "ninfer_host": "Address of an NInfer server started separately; blank discovers LiteSuite's engine.",
     "ninfer_executable": "NInfer server executable used by the next /engine start.",
@@ -343,6 +346,12 @@ SETTINGS_SECTIONS: tuple[SettingsSectionSpec, ...] = (
         "model", "Model", "model-loading", "Load lifecycle",
         "Resident-model budget and the control-plane timeout.",
         ("llama_models_max", "lms_load_timeout_s"), scope="device", keywords=("resident", "timeout", "load", "VRAM"),
+    ),
+    _section(
+        "model", "Model", "model-prompt-cache", "Prompt cache",
+        "How our llama.cpp router keeps a conversation through side calls.",
+        ("llama_cache_ram_mib", "llama_slot_prompt_similarity", "llama_cache_idle_slots"), scope="device",
+        keywords=("cache", "prefix", "slot", "similarity", "RAM", "idle"),
     ),
     _section(
         "ninfer", "NInfer", "ninfer-attach", "Attachment",

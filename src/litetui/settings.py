@@ -356,6 +356,21 @@ class Settings:
     #: already fill this class of GPU, and the OOM of 2026-08-21 is why
     #: memory ceilings are set here rather than discovered by crashing.
     llama_models_max: int = 2
+    #: Prompt-cache defaults for every model OUR router serves, written to the
+    #: preset ini's [*] section; a per-model Load value wins. They apply on the
+    #: next router spawn. Measured cause (prefix-audit P2, T1306-B): after a
+    #: ~200-token side call the b9360 router saved the idle conversation to an
+    #: 8192 MiB RAM cache that a 74k-127k hybrid entry (9.5-12.7 GiB) cannot fit
+    #: beside anything, and re-read it from token 0: 12 times, 595 s of 1,628 s.
+    #: --cache-ram MiB. Never -1: that caps the cache at n_ctx tokens in total.
+    llama_cache_ram_mib: int = 32768
+    #: --slot-prompt-similarity. A side call shares ~40 tokens with the main
+    #: prompt (~0.2) and took its slot at upstream's 0.10. Never 0.0, which
+    #: turns similarity selection off.
+    llama_slot_prompt_similarity: float = 0.5
+    #: --cache-idle-slots. Off keeps an idle conversation in VRAM while another
+    #: slot runs, instead of moving it to the RAM cache on every new task.
+    llama_cache_idle_slots: bool = False
     #: Per-model Load-tab overrides {model_key: {"ctx": …, "ngl": …, ...}} —
     #: key vocabulary is llm_backend.FLAG_FOR, edited via /modelcfg.
     llama_load_settings: dict = field(default_factory=dict)

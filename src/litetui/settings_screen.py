@@ -934,6 +934,27 @@ class SettingsBody(Widget):
                             "the SDK's 60s default.",
                             placeholder="600",
                         )
+                        yield self._section_header("model-prompt-cache")
+                        yield from self._text_row(
+                            "llama_cache_ram_mib", "Prompt cache RAM, MiB (--cache-ram)",
+                            "System RAM our router keeps for saved conversations. A 127k "
+                            "conversation is about 12.7 GiB, more than upstream's 8192. "
+                            "Applies on the router's next start.",
+                            placeholder="32768",
+                        )
+                        yield from self._text_row(
+                            "llama_slot_prompt_similarity", "Slot similarity (--slot-prompt-similarity)",
+                            "Share of a request that must match a slot to reuse it. A short side "
+                            "call scores about 0.2 against the conversation, so 0.5 keeps it out of "
+                            "the conversation's slot. Applies on the router's next start.",
+                            placeholder="0.5",
+                        )
+                        yield from self._switch_row(
+                            "llama_cache_idle_slots", "Move idle slots to RAM (--cache-idle-slots)",
+                            "Off keeps an idle conversation in GPU memory while another request runs. "
+                            "On moves it to the RAM cache on every new request and copies it back. "
+                            "Applies on the router's next start.",
+                        )
 
                         # ── Generation ───────────────────────────────────────────────
                 # T893 — THE USER: "ninfer settings should have their own new tab ... next to
@@ -1876,6 +1897,10 @@ class SettingsBody(Widget):
             raise ValueError("tool_context_threshold_chars: must be >= 0")
         if out.llama_models_max < 0:
             raise ValueError("llama_models_max: 0 means unlimited; below that is nothing")
+        if out.llama_cache_ram_mib < 0:
+            raise ValueError("llama_cache_ram_mib: 0 turns the cache off; -1 caps it at the context size, so not here")
+        if not 0 < out.llama_slot_prompt_similarity <= 1:
+            raise ValueError("llama_slot_prompt_similarity: above 0 and at most 1 (0 turns slot matching off)")
         if out.lms_load_timeout_s < 30:
             raise ValueError("lms_load_timeout_s: under 30s no large model can load")
         if hasattr(out, "tts_timeout"):

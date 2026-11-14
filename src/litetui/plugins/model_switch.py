@@ -872,6 +872,9 @@ _LOAD_FIELDS: list[tuple] = [
     ("mlock", "Keep Model in Memory", "tri", None),
     ("mmap", "Try mmap()", "tri", None),
     ("context_shift", "Context Shift", "tri", None),
+    ("cache_ram", "Prompt Cache RAM (MiB)", "int", "router default"),
+    ("slot_similarity", "Slot Similarity", "float", "router default"),
+    ("cache_idle_slots", "Move Idle Slots to RAM", "tri", None),
     ("seed", "Seed", "int", "random"),
     ("rope_base", "RoPE Frequency Base", "float", "auto"),
     ("rope_scale", "RoPE Frequency Scale", "float", "auto"),
@@ -1083,8 +1086,7 @@ class ModelConfigBody(Widget):
                         auto_mmproj, mmproj_found = self._sibling_projector()
                         for key, label, kind, extra in _LOAD_FIELDS:
                             editable = on_llama or key == "ctx"
-                            flag = llm_backend.FLAG_FOR.get(key, "")
-                            missing = bool(flags) and flag not in flags
+                            missing = not llm_backend.load_key_expressible(key, flags)
                             note = (
                                 f"n/a in installed build ({llm_backend.configured_build(app.settings)})"
                                 if missing else
