@@ -17,6 +17,7 @@ from copy import deepcopy
 from types import SimpleNamespace
 
 import pytest
+from _owned_seat import conversation_id, owned_session
 
 from litetui import settings_runtime
 from litetui.plugins import settings_ui
@@ -25,13 +26,18 @@ from litetui.settings_service import SettingsService
 from litetui.settings_ui_adapter import SettingsUiAdapter
 
 
+ABC = conversation_id("abc")
+
+
 @pytest.fixture
 def launched(tmp_path, monkeypatch):
     """`litetui --backend codex` on a conversation whose saved engine differs."""
     monkeypatch.delenv("LITETUI_BACKEND", raising=False)  # conftest pins it
-    directory = tmp_path / ".convos" / "abc"
+    session = owned_session(tmp_path)
+    directory = session.conversation_directory(ABC)
     directory.mkdir(parents=True)
-    app = SimpleNamespace(settings=Settings(), convo_dir=directory, _settings_service=SettingsService(tmp_path),
+    app = SimpleNamespace(settings=Settings(), convo_dir=directory, _agent_session=session,
+                          _settings_service=SettingsService(tmp_path, agent_session=session),
                           available_models=[])
     app._invocation_saved_values = {"backend": app.settings.backend}
     app._cli_initial_backend = "codex"
@@ -55,9 +61,9 @@ def settings_dialog_save(app, monkeypatch, **edits):
 
 
 def test_an_unrelated_save_does_not_persist_the_launch_engine(launched, monkeypatch):
-    saved_before = launched._settings_service.snapshot("abc").saved.backend
+    saved_before = launched._settings_service.snapshot(ABC).saved.backend
     settings_dialog_save(launched, monkeypatch, show_stop_time=True)
-    snapshot = launched._settings_service.snapshot("abc")
+    snapshot = launched._settings_service.snapshot(ABC)
     assert snapshot.saved.show_stop_time is True  # the edit the user made
     assert snapshot.saved.backend == saved_before  # was 'codex' before the fix
     assert launched._invocation_saved_values == {"backend": saved_before}  # the launch pin survives
@@ -67,7 +73,7 @@ def test_an_unrelated_save_does_not_persist_the_launch_engine(launched, monkeypa
 def test_a_deliberate_engine_change_still_saves_and_survives_reconnect(launched, monkeypatch):
     """46a18b3 made this work; the fix must not break it."""
     settings_dialog_save(launched, monkeypatch, backend="llamacpp")
-    assert launched._settings_service.snapshot("abc").saved.backend == "llamacpp"
+    assert launched._settings_service.snapshot(ABC).saved.backend == "llamacpp"
     assert launched._invocation_saved_values == {}
     settings_runtime.prepare_reconnect(launched)
     assert launched.settings.backend == "llamacpp"

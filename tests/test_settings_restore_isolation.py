@@ -25,6 +25,7 @@ import json
 from types import SimpleNamespace as NS
 
 import pytest
+from _owned_seat import conversation_id, owned_session
 from textual.app import App
 
 import litetui.settings as settings_mod
@@ -40,8 +41,14 @@ from litetui.settings_screen import (
 
 # ── real-boundary helpers ────────────────────────────────────────────────────
 
+A, B = conversation_id("A"), conversation_id("B")
+
+
 def _service(tmp_path) -> SettingsService:
-    return SettingsService(tmp_path / "root", tmp_path / "root" / "convos")
+    # Conversation writes need an owned agent session (e52007fe).
+    root = tmp_path / "root"
+    root.mkdir(exist_ok=True)
+    return SettingsService(root, agent_session=owned_session(root))
 
 
 def _seed(service: SettingsService, convo_id: str, **values) -> None:
@@ -107,15 +114,15 @@ async def test_restore_excludes_env_owned_field(tmp_path, monkeypatch):
     service = _service(tmp_path)
     # Seed with env CLEAR so 7 persists as a genuine preference, not a masked one.
     monkeypatch.delenv("LM_TOOL_ITERS", raising=False)
-    _seed(service, "A", tool_iterations=7, pin_default_model=True)
+    _seed(service, A, tool_iterations=7, pin_default_model=True)
 
     # The environment now owns tool_iterations; the dialog renders it read-only.
     monkeypatch.setenv("LM_TOOL_ITERS", "99")
-    snap = service.snapshot("A")
+    snap = service.snapshot(A)
     assert snap.effective.tool_iterations == 99, "precondition: env override is live"
     assert snap.saved.tool_iterations == 7, "precondition: disk preference is 7"
 
-    screen = SettingsScreen(snap.effective, **_bindings(service, "A"))
+    screen = SettingsScreen(snap.effective, **_bindings(service, A))
     app = _Host(screen)
     async with app.run_test(size=(120, 45)) as pilot:
         body = await _open_body(app, pilot)
@@ -125,7 +132,7 @@ async def test_restore_excludes_env_owned_field(tmp_path, monkeypatch):
             f for p in result.persistence if p.saved for f in p.fields
         }
 
-    execution = _execution(service, "A")
+    execution = _execution(service, A)
     # Positive control: a non-env field WAS reset, so Restore genuinely ran.
     assert execution["pin_default_model"] is False
     assert "pin_default_model" in saved_fields
@@ -133,7 +140,7 @@ async def test_restore_excludes_env_owned_field(tmp_path, monkeypatch):
     assert execution["tool_iterations"] == 7
     assert "tool_iterations" not in saved_fields
 
-    after = service.snapshot("A")
+    after = service.snapshot(A)
     assert after.effective.tool_iterations == 99  # env still wins at runtime
     assert after.saved.tool_iterations == 7        # persisted preference intact
 
@@ -145,22 +152,22 @@ async def test_restore_env_guard_is_load_bearing(tmp_path, monkeypatch):
     above is discriminating on the ``source_of`` guard, not vacuously true."""
     service = _service(tmp_path)
     monkeypatch.delenv("LM_TOOL_ITERS", raising=False)
-    _seed(service, "A", tool_iterations=7, pin_default_model=True)
+    _seed(service, A, tool_iterations=7, pin_default_model=True)
     monkeypatch.setenv("LM_TOOL_ITERS", "99")
 
     # Neutralise the guard the dialog consults (settings_screen reads
     # settings_mod.source_of): pretend nothing is env-owned.
     monkeypatch.setattr(settings_mod, "source_of", lambda name: None)
 
-    snap = service.snapshot("A")
-    screen = SettingsScreen(snap.effective, **_bindings(service, "A"))
+    snap = service.snapshot(A)
+    screen = SettingsScreen(snap.effective, **_bindings(service, A))
     app = _Host(screen)
     async with app.run_test(size=(120, 45)) as pilot:
         await _open_body(app, pilot)
         await _confirm_restore(pilot)
 
     # Guard removed => the env-owned field IS reset to factory (48).
-    assert _execution(service, "A")["tool_iterations"] == Settings().tool_iterations == 48
+    assert _execution(service, A)["tool_iterations"] == Settings().tool_iterations == 48
 
 
 # ── R2: Restore never touches another conversation's file ─────────────────────
@@ -169,19 +176,19 @@ async def test_restore_env_guard_is_load_bearing(tmp_path, monkeypatch):
 async def test_restore_leaves_other_conversation_bytes_untouched(tmp_path, monkeypatch):
     service = _service(tmp_path)
     monkeypatch.delenv("LM_TOOL_ITERS", raising=False)
-    _seed(service, "A", pin_default_model=True)
-    _seed(service, "B", pin_default_model=True, tool_iterations=11)
+    _seed(service, A, pin_default_model=True)
+    _seed(service, B, pin_default_model=True, tool_iterations=11)
 
-    before = _convo_file(service, "B").read_bytes()
+    before = _convo_file(service, B).read_bytes()
 
-    snap = service.snapshot("A")
-    screen = SettingsScreen(snap.effective, **_bindings(service, "A"))
+    snap = service.snapshot(A)
+    screen = SettingsScreen(snap.effective, **_bindings(service, A))
     app = _Host(screen)
     async with app.run_test(size=(120, 45)) as pilot:
         await _open_body(app, pilot)
         await _confirm_restore(pilot)
 
     # Positive control: A's own file changed (Restore ran).
-    assert _execution(service, "A")["pin_default_model"] is False
+    assert _execution(service, A)["pin_default_model"] is False
     # Acceptance: B's per-conversation file is byte-for-byte identical.
-    assert _convo_file(service, "B").read_bytes() == before
+    assert _convo_file(service, B).read_bytes() == before
