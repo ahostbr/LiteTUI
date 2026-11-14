@@ -19,7 +19,8 @@ def source(tmp_path, monkeypatch):
     monkeypatch.setenv("LITETUI_HOOKS", "on")
     config = hooks.HookConfig(*hooks.config_paths(workspace))
     config.project_path.parent.mkdir(exist_ok=True)
-    app = SimpleNamespace(hook_config=config, _hook_workspace=workspace, _validate_owned_identity=lambda: None)
+    app = SimpleNamespace(hook_config=config, _hook_workspace=workspace, _validate_owned_identity=lambda: None,
+                          _agent_session=SimpleNamespace(authority=SimpleNamespace(backend="custom", model="unit")))
     bound = {"session_id": "session", "agent_id": "agent", "backend": "custom", "model": "unit"}
     bridge = SimpleNamespace(active=True, identity=bound, instance="work", closing=False, check=lambda: None)
     monkeypatch.setattr(native.work, "bridge", lambda _: bridge)
@@ -223,3 +224,75 @@ async def test_hook_sample_replays_only_its_redacted_terminal_receipt(source, mo
     with pytest.raises(ValueError, match="already been attempted"):
         await testing.run(app, {**cmd, "id": "another-run"})
     assert calls == [{"tool": "read", "args": {}}]
+
+
+# After /backend and before /model Python's /hooks still lists, toggles, edits and tests hooks;
+# only a turn needs a model. These run on the actual owned app (the fixture above stubs its
+# identity check, so it could not show the difference).
+from test_rust_context_reader import app as owned_app  # noqa: E402,F401 - fixture
+from test_rust_context_reader import switch_app  # noqa: E402,F401 - fixture
+from test_rust_context_reader import unchosen  # noqa: E402,F401 - fixture
+
+app = owned_app
+
+
+@pytest.fixture
+def unchosen_hooks(unchosen, tmp_path, monkeypatch):
+    from litetui import background_input as work
+    workspace = tmp_path / "hook-workspace"
+    workspace.mkdir()
+    monkeypatch.setenv("LITETUI_HOOKS", "on")
+    config = hooks.HookConfig(*hooks.config_paths(workspace))
+    config.project_path.parent.mkdir(exist_ok=True)
+    config.global_path.parent.mkdir(parents=True, exist_ok=True)
+    config.global_path.write_text(json.dumps({"version": 1, "hooks": [
+        {"id": "overlap", "events": ["tool_before"], "executable": "global.exe"}]}), encoding="utf-8")
+    config.project_path.write_text(json.dumps({"version": 1, "hooks": [
+        {"id": "overlap", "events": ["tool_before"], "executable": "project.exe", "enabled": False}]}),
+        encoding="utf-8")
+    unchosen.hook_config, unchosen._hook_workspace = config, workspace
+    ordinal = 0
+
+    def request(verb, scope, **fields):
+        nonlocal ordinal
+        ordinal += 1
+        cmd = {"type": native.PREFIX + verb, "id": f"unchosen-{ordinal}", "version": 1,
+               **work.identity(unchosen), "work_instance": work.bridge(unchosen).instance,
+               "scope": scope, **fields}
+        return native.dispatch(unchosen, cmd)
+
+    return unchosen, work.bridge(unchosen), request
+
+
+def test_hooks_toggle_with_no_model_chosen(unchosen_hooks):
+    owner, _, request = unchosen_hooks
+    path = owner.hook_config.path("project")
+    wire = review(request, "project")
+    applied = request("apply", "project", token=wire["token"])
+    saved = request("readback", "project", token=wire["token"], apply_id=applied["apply_id"])
+    assert saved["actual"] == wire["after"] and b'"enabled": true' in path.read_bytes()
+
+
+@pytest.mark.asyncio
+async def test_hook_sample_runs_with_no_model_chosen(unchosen_hooks, monkeypatch):
+    from litetui import native_hook_test as testing
+    from contextlib import asynccontextmanager
+    owner, bridge, request = unchosen_hooks
+
+    @asynccontextmanager
+    async def authority(app, *, profile, captured):
+        yield SimpleNamespace(profile=profile)
+
+    monkeypatch.setattr(testing.native_runtime_controls, "enabled", lambda _: True)
+    monkeypatch.setattr(testing.native_runtime_controls, "authorization", authority)
+    listing = request("list", "global")
+    base = {"version": 1, **bridge.identity, "work_instance": bridge.instance, "scope": "global"}
+    wire = testing.review(owner, {**base, "type": testing.REVIEW, "id": "review-unchosen",
+                                  "event": "tool_before", "revision": listing["revision"], "hook_id": "overlap"})
+    cmd = {**base, "type": testing.RUN, "id": "run-unchosen", "token": wire["token"]}
+
+    async def invoke(app, hook, document, profile, *, allow_prompt, testing):
+        return hooks.HookResult(True, "", stdout="", stderr="", exit_code=0)
+    monkeypatch.setattr(testing.hook_host, "invoke", invoke)
+    receipt = await testing.run(owner, cmd)
+    assert receipt["exit_code"] == 0

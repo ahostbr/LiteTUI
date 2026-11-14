@@ -109,9 +109,10 @@ def _identity(app):
         raise ValueError('Work conversation path differs from its owned capability')
     backend = text(app.backend.name, 128)
     model = app.model_id
-    if model is not None:
+    if model:
         text(model, 4096)
-    if authority.backend != backend or authority.model != model:
+    # After /backend the model is unchosen until /model; only a turn needs one (Ryan 2026-11-12).
+    if authority.backend != backend or authority.model != (model or None):
         raise ValueError('Work identity disagrees with owned agent authority')
     return {'version': VERSION, 'session_id': current, 'agent_id': valid_id(authority.agent_id),
             'backend': backend, 'model': model}

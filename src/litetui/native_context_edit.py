@@ -98,7 +98,7 @@ def dispatch(app, cmd):
 
             def guard(temporary):
                 bridge.check()
-                app._validate_owned_identity()
+                work.validate_identity(app)  # After /backend the model is unchosen until /model; only a turn needs one (Ryan 2026-11-12).
                 gui_rpc._idle(app)
                 if native_context._regular_file(temporary) != ("content", pending.after):
                     raise ValueError("Staged memory draft changed before publication")

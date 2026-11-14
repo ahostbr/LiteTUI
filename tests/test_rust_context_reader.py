@@ -10,6 +10,8 @@ from test_rust_background_input import app as owned_app
 from test_rust_background_input import command
 from test_rust_background_input import switch_app as owned_switch_app
 
+from unchosen_model import unchoose
+
 from litetui import background_input as work
 from litetui import native_context
 from litetui.agent_store import StoreError
@@ -18,13 +20,23 @@ app, switch_app = owned_app, owned_switch_app
 pytestmark = pytest.mark.asyncio
 
 
-@pytest_asyncio.fixture
-async def armed(app):
+def arm(app):
     app._launch_options.work_lifecycle_version = 1
     captured = work.capture(app, command(app, type="gui.work.native_capture"))
     work.activate(app, command(app, type="gui.work.native_activate", instance=captured["instance"],
                                activation_token=captured["activation_token"]))
     return app
+
+
+@pytest_asyncio.fixture
+async def armed(app):
+    return arm(app)
+
+
+@pytest_asyncio.fixture
+async def unchosen(app):
+    """Work armed after /backend and before /model: the model unchosen (unchosen_model.py)."""
+    return arm(unchoose(app))
 
 
 def request(app, document="system", **fields):
@@ -221,3 +233,10 @@ async def test_hardlinked_foreign_memory_is_refused(armed, tmp_path):
     target.hardlink_to(other)
     with pytest.raises(ValueError, match="regular unlinked"):
         native_context.page(armed, request(armed, target.name))
+
+
+async def test_context_reads_with_no_model_chosen(unchosen):
+    # Python's /context reads the conversation whatever the model; only a turn needs one.
+    result = native_context.page(unchosen, request(unchosen))
+    assert result["status"] == "page" and result["model"] == ""
+    assert result["text"] == unchosen.conversation[0]["content"]

@@ -7,6 +7,7 @@ import pytest
 from test_rust_context_reader import app as owned_app
 from test_rust_context_reader import armed as owned_context
 from test_rust_context_reader import switch_app as owned_switch_app
+from test_rust_context_reader import unchosen  # noqa: F401 - fixture
 
 from litetui import background_input as work
 from litetui import gui_rpc, native_mcp_config
@@ -164,3 +165,15 @@ async def test_linked_writer_lock_refuses_without_touching_either_file(armed):
     with pytest.raises(ValueError,match="lock"):
         call(app,"apply",token=review["token"])
     assert sentinel.read_bytes() == b"" and target.read_bytes() == before
+
+
+async def test_mcp_declarations_edit_with_no_model_chosen(unchosen):
+    # After /backend and before /model Python's /mcp still edits its declarations.
+    dot = unchosen.mcp.root / ".mcp.json"
+    dot.write_text(json.dumps({"mcpServers": {"edit": {"command": "fixture"}}}))
+    listing = call(unchosen, "list")
+    review = call(unchosen, "review", name="edit", revision=listing["revision"], disabled=True)
+    saved = call(unchosen, "apply", token=review["token"])
+    proof = call(unchosen, "readback", apply_id=saved["apply_id"], token=review["token"])
+    assert json.loads(dot.read_bytes())["mcpServers"]["edit"]["disabled"] is True
+    assert proof["config"]["rows"][-1]["disabled"]

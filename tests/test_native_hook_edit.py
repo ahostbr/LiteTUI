@@ -22,7 +22,8 @@ def source(tmp_path, monkeypatch):
     monkeypatch.setenv("LITETUI_DATA_ROOT", str(root))
     monkeypatch.setenv("LITETUI_HOOKS", "on")
     config = hooks.HookConfig(*hooks.config_paths(workspace))
-    app = SimpleNamespace(hook_config=config, _hook_workspace=workspace, _validate_owned_identity=lambda: None)
+    app = SimpleNamespace(hook_config=config, _hook_workspace=workspace, _validate_owned_identity=lambda: None,
+                          _agent_session=SimpleNamespace(authority=SimpleNamespace(backend="custom", model="unit")))
     bound = {"session_id": "session", "agent_id": "agent", "backend": "custom", "model": "unit"}
     bridge = SimpleNamespace(active=True, identity=bound, instance="work", closing=False, check=lambda: None)
     monkeypatch.setattr(edit.native_context.work, "bridge", lambda _: bridge)
@@ -344,3 +345,53 @@ def test_repair_apply_is_a_compare_and_swap_under_the_canonical_lock(mending, mo
     with pytest.raises(ValueError, match="repair conflict"):
         mend("apply", token=wire["token"])
     assert app.hook_config.project_path.read_text() == BROKEN + "\n"
+
+
+# After /backend and before /model Python's /hooks editor still creates hooks; only a turn
+# needs a model. This runs on the actual owned app (the fixture above stubs its identity check).
+from test_rust_context_reader import app as owned_app  # noqa: E402,F401 - fixture
+from test_rust_context_reader import switch_app  # noqa: E402,F401 - fixture
+from test_rust_context_reader import unchosen  # noqa: E402,F401 - fixture
+
+app = owned_app
+
+
+def test_hooks_edit_with_no_model_chosen(unchosen, tmp_path, monkeypatch):
+    from litetui import background_input as work
+    workspace = tmp_path / "hook-workspace"
+    workspace.mkdir()
+    monkeypatch.setenv("LITETUI_HOOKS", "on")
+    unchosen.hook_config = hooks.HookConfig(*hooks.config_paths(workspace))
+    unchosen._hook_workspace = workspace
+
+    def request(verb, **fields):
+        cmd = {"type": edit.PREFIX + verb, "id": "unchosen-" + verb, "version": 1,
+               **work.identity(unchosen), "work_instance": work.bridge(unchosen).instance,
+               "scope": "project", **fields}
+        return edit.dispatch(unchosen, cmd)
+
+    listing = request("snapshot")
+    wire = request("review", revision=listing["revision"], action="create", hook_id=None, hook=FORM)
+    applied = request("apply", token=wire["token"])
+    saved = request("readback", token=wire["token"], apply_id=applied["apply_id"])
+    assert saved["saved"] == wire["after"] and unchosen.hook_config.project_path.exists()
+
+
+def test_hooks_repair_with_no_model_chosen(unchosen, tmp_path, monkeypatch):
+    # /hooks repairs an unreadable scope file with no model chosen too (native_hook_edit.sealed).
+    from litetui import background_input as work
+    workspace = tmp_path / "hook-workspace"
+    workspace.mkdir()
+    monkeypatch.setenv("LITETUI_HOOKS", "on")
+    unchosen.hook_config = hooks.HookConfig(*hooks.config_paths(workspace))
+    unchosen._hook_workspace = workspace
+    unchosen.hook_config.project_path.parent.mkdir(exist_ok=True)
+    unchosen.hook_config.project_path.write_text(BROKEN, encoding="utf-8")
+    base = {"version": 1, **work.identity(unchosen), "work_instance": work.bridge(unchosen).instance,
+            "scope": "project"}
+    revision = edit.dispatch(unchosen, {**base, "type": edit.PREFIX + "snapshot", "id": "snap"})["revision"]
+    wire = edit.dispatch(unchosen, {**base, "type": edit.REPAIR + "review", "id": "mend-review",
+                                    "revision": revision, "text": FIXED})
+    applied = edit.dispatch(unchosen, {**base, "type": edit.REPAIR + "apply", "id": "mend-apply",
+                                       "token": wire["token"]})
+    assert applied["apply_id"] and [h.id for h in unchosen.hook_config.read("project")] == ["keep"]

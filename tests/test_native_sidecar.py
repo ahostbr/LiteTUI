@@ -6,6 +6,7 @@ from types import SimpleNamespace
 
 import pytest
 from test_rust_context_reader import app, armed, switch_app
+from test_rust_context_reader import unchosen  # noqa: F401 - fixture
 
 from litetui import background_input as work
 from litetui import gui_rpc, native_runtime_controls, rpc
@@ -383,3 +384,12 @@ async def test_repeated_local_optin_reviews_do_not_exhaust_completed_history(arm
     assert len(manager.proposals) == sidecar.MAX_PROPOSALS
     assert all(p.status == "complete" and p.replied for p in manager.proposals)
     assert manager.window.process is None and not sidecar.hold(armed)
+
+
+async def test_sidecar_opens_and_closes_with_no_model_chosen(unchosen, tmp_path):
+    # After /backend and before /model Python's Sidecar still opens and closes.
+    manager = await opened(unchosen, tmp_path)
+    review = await call(unchosen, "review", action="close", view=None)
+    applied = await call(unchosen, "apply", token=review["token"])
+    await call(unchosen, "readback", token=review["token"], apply_id=applied["apply_id"])
+    assert manager.window.process is None and not sidecar.hold(unchosen)

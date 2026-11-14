@@ -151,7 +151,7 @@ def row(state, scope, identity):
 
 def _guards(app, bridge, review):
     bridge.check()
-    app._validate_owned_identity()
+    work.validate_identity(app)  # After /backend the model is unchosen until /model; only a turn needs one (Ryan 2026-11-12).
     gui_rpc._idle(app)
     if bridge.closing or app.hook_config is not review.config or capture(app).revision != review.before.revision:
         raise ValueError("Hook scope, source bytes or effective configuration changed; refresh before applying.")

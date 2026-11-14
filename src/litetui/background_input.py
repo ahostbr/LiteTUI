@@ -1606,7 +1606,7 @@ class DeferredJob:
 def _write_deferred(app, document, expected):
     if not app.store.owned or app.store.pending:
         raise ValueError("Deferred job requires its materialized owned target conversation")
-    app._validate_owned_identity()
+    validate_identity(app)  # After /backend the model is unchosen until /model; only a turn needs one (Ryan 2026-11-12).
     owner = (app._agent_session, app.store, Path(app.convo_dir), identity(app))
     path = owner[2] / DEFERRED_FILENAME
     if _read(path, LIMITS["reply_bytes"]) != expected:
@@ -1623,7 +1623,7 @@ def _write_deferred(app, document, expected):
         # The conversation lease excludes cooperating writers. Recheck the
         # exact bytes immediately before replacement to retain detected drift;
         # this is not an OS compare-and-swap against arbitrary external writers.
-        app._validate_owned_identity()
+        validate_identity(app)
         if (app._agent_session is not owner[0] or app.store is not owner[1]
                 or Path(app.convo_dir) != owner[2] or identity(app) != owner[3]
                 or not app.store.owned or app.store.pending

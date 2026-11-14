@@ -139,7 +139,7 @@ def read_binding(app, cmd, operation, *fields):
     if bridge is None or not bridge.active or getattr(app, "_gui_quitting", False):
         raise ValueError("Inspection requires an active, owned Work session")
     bridge.check()
-    app._validate_owned_identity()
+    work.validate_identity(app)  # After /backend the model is unchosen until /model; only a turn needs one (Ryan 2026-11-12).
     binding = {**bridge.identity, "work_instance": bridge.instance}
     work._keys(cmd, ("type", "id", "version", *binding, *fields))
     if (cmd["type"] != operation or type(cmd["version"]) is not int or cmd["version"] != 1

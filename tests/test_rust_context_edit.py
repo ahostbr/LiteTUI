@@ -8,6 +8,7 @@ import pytest
 from test_rust_context_reader import app as owned_app
 from test_rust_context_reader import armed as owned_armed
 from test_rust_context_reader import switch_app as owned_switch_app
+from test_rust_context_reader import unchosen  # noqa: F401 - fixture
 
 from litetui import background_input as work
 from litetui import gui_rpc, native_context
@@ -125,3 +126,13 @@ async def test_refuse_wrong_owner_wrong_token_extra_fields_and_linked_files(arme
     with pytest.raises((StoreError, ValueError), match="regular unlinked"):
         gui_rpc.dispatch(armed, request(armed, "apply", token=r["token"]))
     assert outside.read_bytes() == path.read_bytes() == b"external"
+
+
+async def test_memory_edits_apply_with_no_model_chosen(unchosen):
+    # After /backend and before /model Python still edits memory; only a turn needs a model.
+    path = unchosen._agent_session.memory_root / "memory.md"
+    path.write_bytes(b"Before\n")
+    before = hashlib.sha256(b"Before\n").hexdigest()
+    r = await gui_rpc.async_dispatch(unchosen, request(unchosen, "review", revision=before, text="After\n"))
+    await gui_rpc.async_dispatch(unchosen, request(unchosen, "apply", token=r["token"]))
+    assert path.read_bytes() == b"After\n"

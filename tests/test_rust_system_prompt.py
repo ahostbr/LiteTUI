@@ -12,6 +12,7 @@ from test_rust_backend_catalog import forbidden
 from test_rust_context_reader import app as owned_app
 from test_rust_context_reader import armed as owned_armed
 from test_rust_context_reader import switch_app as owned_switch_app
+from test_rust_context_reader import unchosen  # noqa: F401 - fixture
 
 from litetui import appsvc, command_surface, gui_rpc, native_system_prompt
 from litetui import background_input as work
@@ -237,3 +238,10 @@ async def test_registered_system_command_routes_with_exact_arguments_and_never_m
     with pytest.raises(ValueError, match="limit"):
         native_system_prompt.validate_argument("x" * (native_system_prompt.MAX_PROMPT + 1))
     assert app.conversation == before
+
+
+async def test_system_prompt_edits_apply_with_no_model_chosen(unchosen):
+    # After /backend and before /model Python still edits the system prompt.
+    r = review(unchosen, "Edited with no model chosen\n")
+    a = gui_rpc.dispatch(unchosen, request(unchosen, "apply", token=r["token"]))
+    assert a["stored"] == "saved" and unchosen.conversation[0]["content"] == "Edited with no model chosen\n"

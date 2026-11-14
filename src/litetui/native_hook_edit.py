@@ -105,7 +105,7 @@ class Review:
 
 def guards(app, bridge, review):
     bridge.check()
-    app._validate_owned_identity()
+    work.validate_identity(app)  # After /backend the model is unchosen until /model; only a turn needs one (Ryan 2026-11-12).
     gui_rpc._idle(app)
     if (bridge.closing or app.hook_config is not review.config
             or native_hook_toggle.capture(app).revision != review.before.revision):
@@ -271,7 +271,7 @@ class Repair:
 def sealed(app, bridge, pending):
     """Both scope files are still exactly the bytes reviewed, and nothing else has taken over."""
     bridge.check()
-    app._validate_owned_identity()
+    work.validate_identity(app)  # After /backend the model is unchosen until /model; only a turn needs one (Ryan 2026-11-12).
     gui_rpc._idle(app)
     paths = tuple(_unlinked(app.hook_config.path(name)).absolute() for name in SCOPES)
     raw = tuple(scope_bytes(app, name) for name in SCOPES)

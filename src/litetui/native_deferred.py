@@ -68,7 +68,7 @@ def _owner(app, value):
     value.check(allow_error=True)
     if app.store.pending or not app.store.owned:
         raise ValueError("Deferred recovery requires its materialized owned target")
-    app._validate_owned_identity()
+    work.validate_identity(app)  # After /backend the model is unchosen until /model; only a turn needs one (Ryan 2026-11-12).
     if getattr(app, "_gui_quitting", False):
         raise ValueError("Deferred recovery is unavailable while closing")
 

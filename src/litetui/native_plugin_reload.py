@@ -207,7 +207,7 @@ def dispatch(app, cmd):
             def guarded_activity():
                 activity = _activity(app, cmd)
                 bridge.check()
-                app._validate_owned_identity()
+                native_context.work.validate_identity(app)  # After /backend the model is unchosen until /model; only a turn needs one (Ryan 2026-11-12).
                 gui_rpc._idle(app)
                 return activity
 

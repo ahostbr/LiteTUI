@@ -14,6 +14,7 @@ from test_rust_background_input import app as _app
 from test_rust_background_input import command
 from test_rust_background_input import switch_app as _switch_app
 from test_rust_deferred_evidence import deferred as _deferred
+from unchosen_model import unchoose
 from textual.worker import WorkerFailed
 
 from litetui import background_input as work
@@ -341,3 +342,34 @@ async def test_journal_drift_during_temporary_flush_preserves_foreign_bytes(held
     assert path.read_bytes() == foreign
     assert not list(path.parent.glob('.native-work-job-*.tmp'))
     assert not app._rewrite_test_requests
+
+
+@pytest.mark.asyncio
+async def test_a_deferred_job_is_discarded_with_no_model_chosen(app, deferred):
+    # After /backend and before /model a held scheduled job can still be reviewed and discarded:
+    # no turn runs. The new epoch records the unchosen model as "".
+    unchoose(app)
+    _, document, _ = deferred
+    document['record']['target'] = {key: work.identity(app)[key] for key in ('session_id', 'agent_id')}
+    document['record']['epoch']['identity']['agent_id'] = work.identity(app)['agent_id']
+    (app.convo_dir / work.DEFERRED_FILENAME).write_bytes(work.encoded(document))
+    app._launch_options.work_lifecycle_version = 1
+    descriptor = work.capture(app, command(app))
+    cmd = command(app, type='gui.work.native_activate', instance=descriptor['instance'],
+                  activation_token=descriptor['activation_token'], scheduled_transition_version=1)
+    native_schedule.finish_publication(app, native_schedule.prepare_publication(app, cmd, work.activate(app, cmd)))
+    _, review = reviewed(app)
+    result = recovery.discard(app, discard_command(app, review))
+    assert result['status'] == 'discarded' and not result['close_required']
+
+
+@pytest.mark.asyncio
+async def test_work_snapshot_reads_with_no_model_chosen(app):
+    # After /backend and before /model the Work view (/tasks, /cal) still reads.
+    unchoose(app)
+    app._launch_options.work_lifecycle_version = 1
+    descriptor = work.capture(app, command(app))
+    work.activate(app, command(app, type='gui.work.native_activate', instance=descriptor['instance'],
+                               activation_token=descriptor['activation_token']))
+    snap = snapshot(app)
+    assert snap['model'] == '' and snap['backend'] == app.backend.name

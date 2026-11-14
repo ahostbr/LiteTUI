@@ -233,7 +233,7 @@ class Manager:
                 or any(getattr(app, k) != self.binding[v] for k, v in (("convo_id", "session_id"), ("model_id", "model")))):
             raise ValueError("Sidecar belongs to a previous conversation or execution owner. Close it explicitly.")
         bridge.check()
-        app._validate_owned_identity()
+        background_input.validate_identity(app)  # After /backend the model is unchosen until /model; only a turn needs one (Ryan 2026-11-12).
 
     def enqueue(self, frame):
         # Called by the retained pipe reader. No application call, write or wait.

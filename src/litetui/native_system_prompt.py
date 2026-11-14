@@ -139,7 +139,7 @@ def validate_argument(text):
 
 def _commit(app, bridge, pending):
     bridge.check()
-    app._validate_owned_identity()
+    work.validate_identity(app)  # After /backend the model is unchosen until /model; only a turn needs one (Ryan 2026-11-12).
     gui_rpc._idle(app)
     store = app.store
     if store.loading or store.persist_error:

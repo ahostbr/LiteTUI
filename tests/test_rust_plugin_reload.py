@@ -7,6 +7,7 @@ from test_plugin_reload_ui import _reg_with, _spec
 from test_rust_context_reader import app as owner_app
 from test_rust_context_reader import armed as owner_armed
 from test_rust_context_reader import switch_app as owner_switch
+from test_rust_context_reader import unchosen  # noqa: F401 - fixture
 
 from litetui import background_input as work
 from litetui import gui_rpc, tool_schemas
@@ -189,3 +190,13 @@ async def test_static_schema_byte_limit_and_hard_link_refuse_before_publication(
     with pytest.raises(ValueError, match="Linked"):
         call(armed, "review", name="bash")
     assert armed.plugins is registry
+
+
+async def test_plugin_metadata_reloads_with_no_model_chosen(unchosen, schema):
+    # After /backend and before /model Python still reloads plugin metadata.
+    boot(unchosen, schema)
+    review = call(unchosen, "review", name="bash")
+    args = {"name": "bash", "token": review["token"]}
+    result = call(unchosen, "apply", **args)
+    receipt = call(unchosen, "readback", **args, apply_id=result["apply_id"])
+    assert receipt["kind"] == "plugin_verified" and receipt["description"] == review["after"]

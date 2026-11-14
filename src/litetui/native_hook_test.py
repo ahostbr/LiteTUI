@@ -85,7 +85,7 @@ async def run(app, cmd):
         # canonical authorizer sees the original argv, cwd and environment.
         gui_rpc._idle(app)
         bridge.check()
-        app._validate_owned_identity()
+        native_hook_toggle.work.validate_identity(app)  # After /backend the model is unchosen until /model; only a turn needs one (Ryan 2026-11-12).
         if (bridge.closing or getattr(app, "_gui_quitting", False) or bridge.hook_test is not a
                 or a.owner is not app.hook_config or native_hook_toggle.capture(app).revision != a.revision
                 or a.profile != app.chosen_tool_profile or ticket is None or ticket.profile != a.profile):
