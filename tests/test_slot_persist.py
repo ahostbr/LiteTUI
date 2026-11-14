@@ -22,7 +22,7 @@ from urllib.parse import parse_qs, urlsplit
 import pytest
 from openai import AsyncOpenAI
 
-from litetui import model_transport, prefix_persist, strata_engine
+from litetui import model_transport, prefix_persist, strata_engine, strata_options
 from litetui.llm_backend import LlamaCppBackend, _Owned
 from litetui.prefix_persist import SaveStore, prompt_key
 from litetui.settings import Settings
@@ -680,11 +680,14 @@ def test_strata_launch_plan_carries_the_flag_and_still_serves_the_install_file(t
     (root / "serve" / "server.py").write_text("")
     cfg = root / "strata-a.json"
     cfg.write_text(json.dumps({"exe": "strata.exe", "port": 8080, "args": ["--max-context", "8192"]}))
-    s = Settings(strata_root=str(root), slot_persist_dir=str(tmp_path / "saves"))
+    # Every catalog option blank (T1306 integration): T1306-A gives two of them defaults, and this test pins a launch
+    # with NO option set, which serves the install's own file (test_strata_options does the same).
+    blank = {name: None for name in strata_options.FIELD_NAMES}
+    s = Settings(**blank, strata_root=str(root), slot_persist_dir=str(tmp_path / "saves"))
     argv, _cwd, run_cfg, _host = strata_engine.launch_plan(s)
     assert argv[argv.index("--slot-save-path") + 1] == str((tmp_path / "saves" / "strata").resolve())
     assert argv[argv.index("--config") + 1] == str(cfg) and "slot_save_path" not in run_cfg
-    off_argv, *_ = strata_engine.launch_plan(Settings(strata_root=str(root), slot_persist_strata=False))
+    off_argv, *_ = strata_engine.launch_plan(Settings(**blank, strata_root=str(root), slot_persist_strata=False))
     assert "--slot-save-path" not in off_argv
 
 

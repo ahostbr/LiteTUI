@@ -66,8 +66,11 @@ class _Probe:
 def _seat(build, *, prefix_cache: bool, late_gate: list | None = None):
     a = build(None)
     a._system = lambda *_: None
-    if prefix_cache:
-        a._prefix_cache_backend = lambda: True
+    # Pinned both ways (T1306 integration): since T1306-C the predicate reads the `prefix_cache_backends` setting, whose
+    # default lists the fake seat's local backend, so "no prefix cache" must be said, not assumed. A prefix-cache seat
+    # models NInfer, as these tests were written: built-in deferred tools resident from request 1.
+    a._prefix_cache_backend = lambda: prefix_cache
+    a._resident_builtins_backend = lambda: prefix_cache
     probe = _Probe(a)
     if late_gate is not None:
         a.plugins.add_tool("late-probe", _spec("late_probe", "a late gated probe"), lambda args: "late ok",

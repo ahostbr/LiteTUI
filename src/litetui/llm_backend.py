@@ -779,10 +779,11 @@ def render_preset_ini(rows: list[ModelRow], settings, *, load_settings: dict | N
     # :774 at b12078) and would beat what the user typed for one model.
     # Census-gated per flag; an empty census (no --help answer) proves no flag,
     # so nothing is written. Measured cause and defaults: prefix-audit P2.
+    # getattr: a settings object without these fields (an embedder's, a test double) means "not set".
     router_defaults = {
-        "cache_ram": settings.llama_cache_ram_mib,
-        "slot_similarity": settings.llama_slot_prompt_similarity,
-        "cache_idle_slots": settings.llama_cache_idle_slots,
+        "cache_ram": getattr(settings, "llama_cache_ram_mib", None),
+        "slot_similarity": getattr(settings, "llama_slot_prompt_similarity", None),
+        "cache_idle_slots": getattr(settings, "llama_cache_idle_slots", None),
     }
     shared = [_ini_line(k, v) for k, v in sorted(router_defaults.items())
               if v is not None and FLAG_FOR[k] in flags]
