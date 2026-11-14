@@ -188,7 +188,12 @@ class Settings:
     strata_prompt_cache: int | None = None
     strata_prompt_cache_every: int | None = None
     strata_prompt_cache_tail: str | None = None
-    strata_conversation_cache_mib: int | None = None
+    #: On by default (T1306-A, prefix-cache audit P1): engine 0.1.41 parks a displaced conversation
+    #: only with this budget ("default 0 = off"), so every card summary made the next turn re-read the
+    #: whole prompt (224 times, 2,260 s of 2,955 s prefill in strata-uncensored_iq3_xxs.log). 8192 MiB
+    #: is the 0.2.10 engine's own auto-size ceiling. Never sent to an engine without the flag
+    #: (strata_engine.launch_plan). 0 = off, None = as the model's config.
+    strata_conversation_cache_mib: int | None = 8192
     strata_conversation_cache_slots: int | None = None
     strata_conversation_cache_min_free_mib: int | None = None
     strata_session_min_free_mib: int | None = None
@@ -237,7 +242,10 @@ class Settings:
     strata_fit_max_tokens: str | None = None
     strata_aliases: str | None = None
     strata_anthropic_thinking: str | None = None
-    strata_effort_position: str | None = None
+    #: "end" by default (T1306-A, audit P6): the template writes the effort sentence at the top of the
+    #: system turn, so a change of effort re-read the whole prompt. The server checks the engine for
+    #: --tail-role-token itself and keeps "start" on one without it. None = as the model's config.
+    strata_effort_position: str | None = "end"
     strata_reasoning_budget_tokens: int | None = None
     strata_reasoning_loop_recovery: str | None = None
     strata_reasoning_close_retry: str | None = None

@@ -207,7 +207,9 @@ OPTIONS: tuple[Opt, ...] = (
     _o("prompt_cache_tail", _P, ("arg", "--prompt-cache-tail"), "switch", "Checkpoint near the prompt's end",
        "One extra checkpoint near the end of the prompt (single GPU; needs prompt checkpoints on)."),
     _o("conversation_cache_mib", _P, ("arg", "--conversation-cache-mib"), "int", "Parked conversations RAM (MiB)",
-       "RAM budget for parked conversations (default 0 = off).", lo=0),
+       "RAM budget for parked conversations, so a side call (a card summary) does not make the next turn "
+       "re-read the whole prompt. LiteTUI's default 8192 turns it on; 0 = off (the 0.1.41 engine's own "
+       "default); blank = as the model's config. Not sent to an engine that does not have the flag.", lo=0),
     _o("conversation_cache_slots", _P, ("arg", "--conversation-cache-slots"), "int", "Parked conversations kept",
        "At most this many parked conversations (default 4).", lo=0),
     _o("conversation_cache_min_free_mib", _P, ("arg", "--conversation-cache-min-free-mib"), "int", "RAM floor when parking (MiB)",
@@ -314,7 +316,8 @@ OPTIONS: tuple[Opt, ...] = (
        "Requests that do not ask for thinking: think as the model does (model) or not (on_request).",
        choices=("model", "on_request")),
     _o("effort_position", _V, ("key", "effort_position"), "choice", "Where reasoning effort goes",
-       "Where a non-default reasoning effort goes: start (default) or end (keeps the cache when it changes).",
+       "Where a non-default reasoning effort goes: end (LiteTUI's default; keeps the cache when it changes) or "
+       "start (the server's default). An engine older than 0.1.39 keeps start.",
        choices=("start", "end")),
     _o("reasoning_budget_tokens", _V, ("key", "reasoning_budget_tokens"), "int", "Cap thinking (tokens)",
        "Cap the thinking of every request at this many tokens (0 or blank: no cap).", lo=0),
