@@ -1,10 +1,14 @@
 """Actual Textual settings surface bound to scoped temporary storage."""
 from types import SimpleNamespace
 import pytest
+from _owned_seat import conversation_id, owned_session
 from textual.app import App
 from litetui.settings_service import SettingsService
 from litetui.settings_runtime import apply_saved_result
 from litetui.settings_screen import SettingsScreen, SettingsBody
+
+
+A, B = conversation_id('a'), conversation_id('b')
 
 
 class BoundHost(App):
@@ -13,31 +17,43 @@ class BoundHost(App):
 
     def __init__(self, root):
         super().__init__()
-        self.service = SettingsService(root)
-        self.settings = self.service.create_conversation('a').effective
-        self.convo_dir = root / '.convos' / 'a'
+        # Conversation writes need an owned agent session (e52007fe).
+        self._agent_session = owned_session(root)
+        self.service = SettingsService(root, agent_session=self._agent_session)
+        self.settings = self.service.create_conversation(A).effective
+        self.convo_dir = self._agent_session.conversation_directory(A)
 
     def on_mount(self):
         self.push_screen(SettingsScreen(self.settings,
-            snapshot_provider=lambda: self.service.snapshot('a'),
-            save_patch=lambda changes, rev: self.service.save_patch('a', changes, rev),
+            snapshot_provider=lambda: self.service.snapshot(A),
+            save_patch=lambda changes, rev: self.service.save_patch(A, changes, rev),
             runtime_apply=lambda target, result: apply_saved_result(self, target, result)))
 
 
 @pytest.mark.asyncio
-async def test_bound_save_retains_restart_pending_and_persists_only_own_conversation(tmp_path):
+async def test_bound_save_closes_on_restart_pending_and_persists_only_own_conversation(tmp_path):
+    """Save writes only this conversation and closes even though the change applies on the next
+    engine start. It used to stay open on "Runtime changes are pending"; 50ce7625 changed that on
+    Ryan's word (2026-10-24): "i click save it doesnt close ... i press esc go back and the setting
+    didnt change". The pending runtime outcome is still reported to the app.
+
+    The conversation half uses tool_iterations: ninfer_max_context is device-wide since 5f5ef63f
+    (2026-10-24, Ryan: "I set the context in settings to 100K for Strata ... It's still sitting at
+    150K"), so every conversation sees it by design."""
     app = BoundHost(tmp_path)
-    other = app.service.create_conversation('b')
+    other = app.service.create_conversation(B)
     async with app.run_test(size=(120, 45)) as pilot:
         await pilot.pause()
         body = app.screen.query_one(SettingsBody)
         body.query_one('#f-ninfer_max_context').value = '16384'
+        body.query_one('#f-tool_iterations').value = '7'
         body.action_save()
         await pilot.pause()
-        assert app.service.snapshot('a').saved.ninfer_max_context == 16384
-        assert app.service.snapshot('b').saved.ninfer_max_context == other.saved.ninfer_max_context
+        assert app.service.snapshot(A).saved.ninfer_max_context == 16384
+        assert app.service.snapshot(A).saved.tool_iterations == 7
+        assert app.service.snapshot(B).saved.tool_iterations == other.saved.tool_iterations
         assert app.settings.ninfer_max_context == 32768
-        assert app.screen.query_one(SettingsBody)
+        assert not app.screen.query(SettingsBody)
         assert app._settings_save_result.has_pending_runtime
 
 

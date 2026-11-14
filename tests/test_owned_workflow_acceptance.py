@@ -101,7 +101,12 @@ def test_actual_cli_catalog_read_to_default_reservation_race(cli_world, monkeypa
             winner.release()
 
 
-def test_actual_owned_resume_persists_home_address_preserving_snapshot_and_user_prose(tmp_path, monkeypatch):
+def _legacy_store_resume(tmp_path, monkeypatch, check):
+    """An owned seat resuming a transcript, with a legacy .convos archive of the same id beside it.
+
+    `check(app, session, old, old_file, write)`: write(prefix, folder) puts the prompt
+    prefix + memory slot naming `folder` + user tail + store snapshot in the owned transcript.
+    """
     cfg = settings.Settings(backend='codex', default_model='fixture', thinking_level='high')
     monkeypatch.setattr(paths, 'data_root', lambda: tmp_path)
     monkeypatch.setattr(settings, 'load', lambda: cfg)
@@ -117,25 +122,72 @@ def test_actual_owned_resume_persists_home_address_preserving_snapshot_and_user_
         old.mkdir(parents=True)
         old_file = old / 'convo.jsonl'
         old_file.write_bytes(b'legacy archive remains unchanged\n')
-        snapshot = '\n## Your store, loaded once at the start of this conversation\nSNAPSHOT USER TEXT'
-        prompt = 'USER PREAMBLE\n' + memory_prompt(cid, old) + 'UNHEADED USER TAIL' + snapshot
-        target = session.conversation_directory(cid) / 'convo.jsonl'
-        target.parent.mkdir()
-        target.write_text(json.dumps({'type':'meta','id':cid})+'\n'+json.dumps({'type':'msg','message':{'role':'system','content':prompt}})+'\n'+json.dumps({'type':'msg','message':{'role':'user','content':'preserve turn'}})+'\n',encoding='utf-8')
-        before_archive = old_file.read_bytes()
+
+        def write(prefix, folder):
+            # The memory slot as the host writes it after a prefix (textfmt.refresh_store_address).
+            prompt = prefix + memory_prompt(cid, folder).lstrip('\n') + 'UNHEADED USER TAIL' + SNAPSHOT
+            target = session.conversation_directory(cid) / 'convo.jsonl'
+            target.parent.mkdir()
+            target.write_text(json.dumps({'type':'meta','id':cid})+'\n'+json.dumps({'type':'msg','message':{'role':'system','content':prompt}})+'\n'+json.dumps({'type':'msg','message':{'role':'user','content':'preserve turn'}})+'\n',encoding='utf-8')
+            return target
         try:
-            assert app._resume(target, startup=True)
-            current = app.conversation[0]['content']
-            assert 'USER PREAMBLE' in current and 'UNHEADED USER TAIL' in current
-            assert snapshot in current and str(session.memory_root).replace('\\','/') in current.replace('\\','/')
-            assert str(old).replace('\\','/') not in current.replace('\\','/')
-            assert app.conversation[1]['content'] == 'preserve turn'
-            _, persisted = app_module.ConversationRepository.read(target)
-            assert persisted[0]['content'] == current
-            assert old_file.read_bytes() == before_archive
-            assert list(old.iterdir()) == [old_file]
+            check(app, session, old, old_file, write)
         finally:
             app.store.release()
+
+
+SNAPSHOT = '\n## Your store, loaded once at the start of this conversation\nSNAPSHOT USER TEXT'
+
+
+def test_actual_owned_resume_persists_home_address_preserving_snapshot_and_user_prose(tmp_path, monkeypatch):
+    """The host's own slot (a788d5bd: only the real host prefix establishes provenance) names
+    this agent's home, so the resume proceeds, keeps the user's tail and snapshot, and touches
+    no legacy archive. A legacy .convos address is never migrated any more (the next test)."""
+    from litetui.store_identity import _host_prefixes
+
+    def check(app, session, old, old_file, write):
+        prefix = _host_prefixes(app, native=False)[0]
+        target = write(prefix, session.memory_root)
+        before_archive = old_file.read_bytes()
+        assert app._resume(target, startup=True)
+        current = app.conversation[0]['content']
+        assert current.startswith(prefix) and 'UNHEADED USER TAIL' in current
+        assert SNAPSHOT in current and str(session.memory_root).replace('\\','/') in current.replace('\\','/')
+        assert str(old).replace('\\','/') not in current.replace('\\','/')
+        assert app.conversation[1]['content'] == 'preserve turn'
+        _, persisted = app_module.ConversationRepository.read(target)
+        assert persisted[0]['content'] == current
+        assert old_file.read_bytes() == before_archive
+        assert list(old.iterdir()) == [old_file]
+    _legacy_store_resume(tmp_path, monkeypatch, check)
+
+
+def test_actual_owned_resume_refuses_a_legacy_store_address(tmp_path, monkeypatch):
+    """A verified slot naming a legacy .convos store is another memory store than this agent's
+    (store_identity.require_store_match); the resume refuses and writes nothing."""
+    from litetui.store_identity import _host_prefixes
+
+    def check(app, session, old, old_file, write):
+        target = write(_host_prefixes(app, native=False)[0], old)
+        before = (target.read_bytes(), old_file.read_bytes())
+        with pytest.raises(ValueError, match='saved conversation and launch use different memory stores'):
+            app._resume(target, startup=True)
+        assert (target.read_bytes(), old_file.read_bytes()) == before
+        assert list(old.iterdir()) == [old_file]
+    _legacy_store_resume(tmp_path, monkeypatch, check)
+
+
+def test_actual_owned_resume_refuses_a_legacy_store_behind_a_custom_preamble(tmp_path, monkeypatch):
+    """Prose ahead of the host slot cannot establish where the store was (a788d5bd,
+    store_identity.legacy_identity), so a startup resume refuses and writes nothing."""
+    def check(app, session, old, old_file, write):
+        target = write('USER PREAMBLE\n', old)
+        before = (target.read_bytes(), old_file.read_bytes())
+        with pytest.raises(ValueError, match='legacy prompt has no verifiable host store slot'):
+            app._resume(target, startup=True)
+        assert (target.read_bytes(), old_file.read_bytes()) == before
+        assert list(old.iterdir()) == [old_file]
+    _legacy_store_resume(tmp_path, monkeypatch, check)
 
 
 def test_actual_legacy_uuid_refusal_has_actionable_readonly_and_operator_receipt_guidance(cli_world, monkeypatch, capsys):
