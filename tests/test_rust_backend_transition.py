@@ -107,7 +107,7 @@ def command(app, **changes):
     catalog = backend_catalog.catalog(app, {"session_id": app.convo_id})
     return {"type": "gui.backend.set", "id": "switch-operation", "version": 1,
             "session_id": app.convo_id, "agent_id": catalog["agent_id"],
-            "snapshot": catalog["snapshot"], "name": "lmstudio", "model": "new-model", **changes}
+            "snapshot": catalog["snapshot"], "name": "lmstudio", "model": None, **changes}
 
 
 def disk(app):
@@ -116,40 +116,37 @@ def disk(app):
 
 
 @pytest.mark.asyncio
-async def test_success_publishes_backend_and_model_together_and_preserves_owned_history_policy(switch_app):
+async def test_switch_preserves_owned_history_policy_and_closes_the_old_client(switch_app, monkeypatch):
     app = switch_app
+    monkeypatch.setattr(app, "system_message", lambda *_: None)
+    monkeypatch.setattr(app, "update_header", lambda: None)
     request = command(app)
     before_history = copy.deepcopy(app.conversation)
     before_policy = gui_rpc._tool_policy(app)
     old_client = app.client
     global_bytes = (app._agent_session.store.data_root / "settings.json").read_bytes()
     result = await gui_rpc.async_dispatch(app, request)
-    assert result["status"] == "connected", result
+    assert result["status"] == "switched", result
     assert result["mutated"] and not result["close_required"]
     assert result["snapshot"] == request["snapshot"]
-    assert (result["backend"], result["model"]) == ("lmstudio", "new-model")
-    assert (app._agent_session.authority.backend, app._agent_session.authority.model) == ("lmstudio", "new-model")
+    assert (result["backend"], result["model"]) == ("lmstudio", None)
+    assert (app._agent_session.authority.backend, app._agent_session.authority.model) == ("lmstudio", None)
     assert app.conversation == before_history and gui_rpc._tool_policy(app) == before_policy
     assert old_client.is_closed()
     assert app._launch_options.server_mode == "connect" and not app._launch_options.load_model
     assert app._cli_initial_backend is None and app._cli_initial_model is None
-    assert app._user_model_choice == "new-model"
+    assert app._user_model_choice is None
     assert (app._agent_session.store.data_root / "settings.json").read_bytes() == global_bytes
     assert backend_catalog.catalog(app, {"session_id": app.convo_id})["snapshot"] != request["snapshot"]
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("fault", ["version", "missing-model", "empty-model", "unknown", "hidden",
-                                   "session", "agent", "snapshot", "partial"])
+@pytest.mark.parametrize("fault", ["version", "unknown", "hidden", "session", "agent", "snapshot", "partial"])
 async def test_invalid_guarded_requests_refuse_without_disk_or_runtime_changes(switch_app, fault):
     app = switch_app
     request = command(app)
     if fault == "version":
         request["version"] = True
-    elif fault == "missing-model":
-        del request["model"]
-    elif fault == "empty-model":
-        request["model"] = " "
     elif fault == "unknown":
         request["name"] = "unknown"
     elif fault == "hidden":
@@ -159,7 +156,7 @@ async def test_invalid_guarded_requests_refuse_without_disk_or_runtime_changes(s
     elif fault == "snapshot":
         request["snapshot"] = "0" * 64
     else:
-        request = {"type": "gui.backend.set", "name": "lmstudio", "model": "new-model"}
+        request = {"type": "gui.backend.set", "name": "lmstudio", "model": None}
     before = disk(app)
     backend = app.backend
     result = await gui_rpc.async_dispatch(app, request)
@@ -221,38 +218,6 @@ async def test_snapshot_binds_disk_policy_launch_and_history(switch_app, change)
 
 
 @pytest.mark.asyncio
-# A cold (unloaded) model is no longer a failure: Python selects and loads it
-# (test_picking_an_unloaded_model_selects_it_and_loads_it_like_python).
-@pytest.mark.parametrize("failure", ["missing-model", "connection", "thinking"])
-async def test_candidate_failure_is_a_refusal_and_the_session_goes_on(switch_app, monkeypatch, failure):
-    # Ryan's LM Studio switch (2026-11-12) ended his session on a failure that had changed
-    # nothing yet. Before publication only the candidate was touched: refuse in Python's words.
-    app = switch_app
-    if failure == "thinking":
-        app.thinking_level = "low"
-    request = command(app)
-
-    async def listing(_backend):
-        if failure == "connection":
-            raise llm_backend.BackendError("Controlled connection failure")
-        return [llm_backend.ModelRow("different" if failure == "missing-model" else "new-model",
-                                    None, "fixture", True)]
-
-    monkeypatch.setattr(llm_backend.LMStudioBackend, "list_models", listing)
-    before = (app._agent_session.authority.backend, app._agent_session.authority.model)
-    backend, client, files = app.backend, app.client, disk(app)
-    result = await gui_rpc.async_dispatch(app, request)
-    assert result["status"] == "refused" and not result["close_required"], result
-    assert not result["mutated"] and result["error"]
-    if failure == "connection":
-        assert "Controlled connection failure" in result["error"]
-    assert (app._agent_session.authority.backend, app._agent_session.authority.model) == before
-    assert app.backend is backend and app.client is client and disk(app) == files
-    assert not getattr(app, "_backend_transition_error", None)
-    assert not app._backend_transition_inflight
-
-
-@pytest.mark.asyncio
 async def test_partial_publication_is_fatal_and_does_not_claim_rollback(switch_app, monkeypatch):
     from litetui import settings_service
 
@@ -267,8 +232,7 @@ async def test_partial_publication_is_fatal_and_does_not_claim_rollback(switch_a
     result = await gui_rpc.async_dispatch(app, request)
     assert result["status"] == "failed" and result["mutated"] and result["close_required"], result
     assert "historical snapshot failure" in result["error"]
-    assert app.backend.name == "custom"
-    assert (app._agent_session.authority.backend, app._agent_session.authority.model) == ("lmstudio", "new-model")
+    assert app._backend_transition_error == backend_transition.CLOSE_REQUIRED
 
 
 @pytest.mark.asyncio
@@ -294,8 +258,10 @@ async def test_fatal_latch_blocks_gui_and_non_gui_escape_routes(switch_app, monk
 
 
 @pytest.mark.asyncio
-async def test_cancelled_candidate_connection_latches_closed_without_publication(switch_app, monkeypatch):
+async def test_cancelled_connection_after_the_switch_latches_closed(switch_app, monkeypatch):
     app = switch_app
+    monkeypatch.setattr(app, "system_message", lambda *_: None)
+    monkeypatch.setattr(app, "update_header", lambda: None)
     request = command(app)
 
     async def cancelled(_backend):
@@ -304,8 +270,7 @@ async def test_cancelled_candidate_connection_latches_closed_without_publication
     monkeypatch.setattr(llm_backend.LMStudioBackend, "list_models", cancelled)
     with pytest.raises(asyncio.CancelledError):
         await gui_rpc.async_dispatch(app, request)
-    assert app._backend_transition_error
-    assert (app._agent_session.authority.backend, app._agent_session.authority.model) == ("custom", "old-model")
+    assert app._backend_transition_error == backend_transition.CLOSE_REQUIRED
     assert app._backend_transition_inflight is False
 
 
@@ -325,7 +290,7 @@ async def test_exception_after_home_publication_stays_fatal_and_potentially_muta
     result = await gui_rpc.async_dispatch(app, request)
     assert result["status"] == "failed" and result["mutated"] and result["close_required"], result
     assert "error after publication" in result["error"]
-    assert (app._agent_session.authority.backend, app._agent_session.authority.model) == ("lmstudio", "new-model")
+    assert app._backend_transition_error == backend_transition.CLOSE_REQUIRED
 
 
 @pytest.mark.asyncio
@@ -360,80 +325,6 @@ async def test_catalog_does_not_publish_a_model_that_disagrees_with_owned_author
     app._model_id = "unpublished-model"
     with pytest.raises(ValueError, match="model disagrees"):
         backend_catalog.catalog(app, {"session_id": app.convo_id})
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize("reader_fails", [False, True])
-async def test_codex_cleanup_awaits_reader_after_process_exit(reader_fails):
-    from types import SimpleNamespace
-
-    from litetui.codex_app_server import AppServer
-
-    server = AppServer()
-    server.process = SimpleNamespace(returncode=0)
-    release = asyncio.Event()
-    entered = asyncio.Event()
-
-    async def reader():
-        entered.set()
-        await release.wait()
-        if reader_fails:
-            raise RuntimeError("Controlled reader cleanup failure")
-
-    server.reader = asyncio.create_task(reader())
-    backend = SimpleNamespace(name="codex", app_server=server, shutdown=server.shutdown)
-    cleanup = asyncio.create_task(backend_transition._close_backend(SimpleNamespace(), backend))
-    try:
-        await entered.wait()
-        await asyncio.sleep(0)
-        assert not cleanup.done(), "Exited process must not hide an unsettled reader"
-        release.set()
-        if reader_fails:
-            with pytest.raises(RuntimeError, match="reader cleanup failure"):
-                await cleanup
-        else:
-            await cleanup
-        assert server.reader.done()
-    finally:
-        release.set()
-        await asyncio.gather(cleanup, server.reader, return_exceptions=True)
-
-
-@pytest.mark.asyncio
-async def test_picking_an_unloaded_model_selects_it_and_loads_it_like_python(switch_app, monkeypatch):
-    # Sentinel 55fee807 (Ryan: 1:1 with Python): a picked model that is not loaded is selected and
-    # loaded through switch_model's own apply_context_length; the fixture's load stays forbidden.
-    app = switch_app
-    request = command(app)
-    loads = []
-    monkeypatch.setattr(app, "apply_context_length", lambda force=False: loads.append(force))
-
-    async def listing(_backend):
-        return [llm_backend.ModelRow("new-model", None, "fixture", False)]
-
-    monkeypatch.setattr(llm_backend.LMStudioBackend, "list_models", listing)
-    result = await gui_rpc.async_dispatch(app, request)
-    assert result["status"] == "connected", result
-    assert (app._agent_session.authority.backend, app._agent_session.authority.model) == ("lmstudio", "new-model")
-    assert loads == [False]
-
-
-@pytest.mark.asyncio
-async def test_a_model_that_vanishes_during_connect_is_not_replaced(switch_app, monkeypatch):
-    app = switch_app
-    request = command(app)
-    listings = 0
-
-    async def listing(_backend):
-        nonlocal listings
-        listings += 1
-        return [llm_backend.ModelRow("new-model" if listings == 1 else "other-model", None, "fixture", True)]
-
-    monkeypatch.setattr(llm_backend.LMStudioBackend, "list_models", listing)
-    result = await gui_rpc.async_dispatch(app, request)
-    assert listings == 2
-    assert result["status"] == "failed" and result["close_required"], result
-    assert app._backend_transition_error
 
 
 @pytest.mark.asyncio
@@ -490,9 +381,11 @@ async def test_backend_switch_preserves_negotiated_history_protocol(switch_app, 
                 "backend": app.backend.name, "model": app.model_id,
                 "scope": "current", "catalog_snapshot": None}
 
+    app.system_message = lambda *_: None
+    app.update_header = lambda: None
     before = gui_rpc.dispatch(app, history_command("gui.history.native_snapshot")) if version else None
     result = await gui_rpc.async_dispatch(app, command(app))
-    assert result["status"] == "connected", result
+    assert result["status"] == "switched", result
     if version:
         assert before is not None
         after = gui_rpc.dispatch(app, history_command("gui.history.native_snapshot"))
@@ -513,70 +406,6 @@ async def test_backend_switch_preserves_negotiated_history_protocol(switch_app, 
     assert app._launch_options.server_mode == "connect" and app._launch_options.load_model is False
     for path in (app.convo_dir / "settings.json", app._agent_session.store.data_root / "settings.json"):
         assert "history_projection_version" not in json.loads(path.read_text(encoding="utf-8"))
-
-
-# -- Python's /backend then /model, for the native frontend (Ryan 2026-11-11) ------------------
-# "/backend switches backend only /model displays models that backend provides and always allows a
-# context to be choosen for local models". The native picker asks the source for the other
-# backend's list (connect-only, nothing loaded) and publishes the pick and the switch together.
-
-
-def listing_command(app, name="lmstudio"):
-    catalog = backend_catalog.catalog(app, {"session_id": app.convo_id})
-    return {"type": "gui.backends.native_models", "id": "listing", "version": 1,
-            "session_id": app.convo_id, "agent_id": catalog["agent_id"],
-            "snapshot": catalog["snapshot"], "name": name}
-
-
-@pytest.mark.asyncio
-async def test_listing_another_backend_shows_python_rows_and_changes_nothing(switch_app):
-    app = switch_app
-    before = disk(app)
-    authority = (app._agent_session.authority.backend, app._agent_session.authority.model)
-    result = await gui_rpc.async_dispatch(app, listing_command(app))
-    assert result["kind"] == "backend_models" and result["name"] == "lmstudio"
-    assert [row["key"] for row in result["models"]] == ["old-model", "new-model"]
-    # plugins/model_switch._row_label, without the current marker (nothing is chosen yet).
-    assert result["models"][1]["label"] == "  new-model  · fixture  · loaded"
-    assert result["context"]["setting"] == "default_context_length"
-    assert result["context"]["applies_on_engine_start"] is False
-    assert disk(app) == before
-    assert (app._agent_session.authority.backend, app._agent_session.authority.model) == authority
-    assert app.backend.name == "custom" and app.model_id == "old-model"
-
-
-@pytest.mark.asyncio
-async def test_listing_the_current_backend_says_already_on_it(switch_app):
-    with pytest.raises(ValueError, match="Already on custom"):
-        await gui_rpc.async_dispatch(switch_app, listing_command(switch_app, "custom"))
-
-
-@pytest.mark.asyncio
-async def test_listing_refuses_a_stale_snapshot(switch_app):
-    request = listing_command(switch_app)
-    request["snapshot"] = "0" * 64
-    with pytest.raises(ValueError, match="stale"):
-        await gui_rpc.async_dispatch(switch_app, request)
-
-
-@pytest.mark.asyncio
-async def test_switch_with_a_context_saves_python_context_choice(switch_app):
-    app = switch_app
-    result = await gui_rpc.async_dispatch(app, command(app, context=65536))
-    assert result["status"] == "connected", result
-    # context_choice.settings_after: the backend's main setting and the per-model memory.
-    assert app.settings.default_context_length == 65536
-    assert app.settings.model_context_overrides["lmstudio:new-model"] == 65536
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize("value", [100, 1 << 21, "65536", True])
-async def test_switch_refuses_an_implausible_context_before_anything_changes(switch_app, value):
-    app = switch_app
-    before = disk(app)
-    result = await gui_rpc.async_dispatch(app, command(app, context=value))
-    assert result["status"] == "refused" and not result["mutated"], result
-    assert disk(app) == before
 
 
 @pytest.mark.asyncio
@@ -613,8 +442,10 @@ async def test_switch_restores_the_level_last_used_with_that_backend(switch_app)
     # LM Studio last ran at default: the switch brings it back instead of carrying "low"
     # (which this LM Studio model does not take, so carrying it would be refused).
     app.settings.thinking_by_backend["lmstudio"] = "default"
+    app.system_message = lambda *_: None
+    app.update_header = lambda: None
     result = await gui_rpc.async_dispatch(app, command(app))
-    assert result["status"] == "connected", result
+    assert result["status"] == "switched", result
     assert app._agent_session.authority.thinking_level == "default"
     assert app.thinking_level is None
 
@@ -711,3 +542,13 @@ async def test_an_unchosen_model_is_an_owned_identity_for_work_records_and_clean
     document = {"version": work.VERSION, "identity": owner, "instance": "0" * 64,
                 "provider": "host", "revision": 0, "producers": [], "inputs": []}
     work.validate_document(document)
+
+
+@pytest.mark.asyncio
+async def test_a_switch_that_names_a_model_is_refused_without_changes(switch_app):
+    # /backend switches the backend only; /model picks (gui.models.select, Python's switch_model).
+    app = switch_app
+    before = disk(app)
+    result = await gui_rpc.async_dispatch(app, command(app, model="new-model"))
+    assert result["status"] == "refused" and not result["mutated"] and not result["close_required"], result
+    assert app.backend.name == "custom" and app.model_id == "old-model" and disk(app) == before

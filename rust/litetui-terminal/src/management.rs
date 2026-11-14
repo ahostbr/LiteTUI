@@ -398,8 +398,6 @@ struct BrowserPending {
     id: CommandId,
     request: BrowserRequest,
 }
-/// The BackendPending stage of a read-only "list this backend's models" request.
-const MODEL_LISTING: u8 = 9;
 struct BackendPending {
     id: CommandId,
     stage: u8,
@@ -771,8 +769,6 @@ pub struct Management {
     settings_generation: u64,
     backend: Option<BackendPending>,
     backend_catalog: Option<crate::backend_controls::Catalog>,
-    /// The context answer that rides the next backend switch (cleared when it is sent or refused).
-    backend_context: Option<u64>,
     /// The context answer that rides the next F3 model selection.
     model_context: Option<u64>,
     browser: Option<BrowserPending>,
@@ -867,7 +863,6 @@ impl Default for Management {
             settings_generation: 0,
             backend: None,
             backend_catalog: None,
-            backend_context: None,
             model_context: None,
             browser: None,
             browser_page: None,
@@ -3069,7 +3064,7 @@ impl Management {
         &mut self,
         intent: crate::backend_controls::Intent,
     ) -> io::Result<Value> {
-        use crate::backend_controls::{Intent, LIST, MODELS, SET};
+        use crate::backend_controls::{Intent, LIST, SET};
         if !self.ready() {
             return Err(fail("Wait for the current runtime operation"));
         }
@@ -3092,49 +3087,6 @@ impl Management {
         }
         let (stage, selection, catalog, mut command) = match intent {
             Intent::Read => (0, None, None, json!({"type":LIST,"session_id":session})),
-            Intent::Models { revision, name } => {
-                if !self.operations.iter().any(|v| v == MODELS) {
-                    return Err(fail(
-                        "Runtime cannot list another backend's models; update Python source",
-                    ));
-                }
-                let catalog = self
-                    .backend_catalog
-                    .as_ref()
-                    .filter(|c| c.revision == revision && c.entries.iter().any(|r| r.name == name))
-                    .ok_or_else(|| fail("Backend selection changed; refresh and select again"))?;
-                let (agent, _) = self.browser_authority.as_ref().expect("owned agent");
-                let command = json!({"type":MODELS,"version":1,"session_id":session,"agent_id":agent,"snapshot":catalog.snapshot,"name":name});
-                (
-                    MODEL_LISTING,
-                    Some((name, String::new())),
-                    Some(catalog.clone()),
-                    command,
-                )
-            }
-            Intent::Select {
-                revision,
-                name,
-                model,
-                context,
-            } => {
-                let catalog = self
-                    .backend_catalog
-                    .as_ref()
-                    .ok_or_else(|| fail("Refresh the backend catalog before selecting"))?;
-                catalog.selection(revision, &name, &model)?;
-                self.backend_context = context;
-                (
-                    1,
-                    Some((name, model)),
-                    Some(catalog.clone()),
-                    self.history_command(
-                        session,
-                        &self.expected.as_ref().unwrap().1,
-                        &self.expected.as_ref().unwrap().2,
-                    )?,
-                )
-            }
             // Backend only: the same verified phases, with no model (Python's model_id "").
             Intent::Switch { revision, name } => {
                 let catalog = self
@@ -3142,7 +3094,6 @@ impl Management {
                     .as_ref()
                     .filter(|c| c.revision == revision && c.entries.iter().any(|r| r.name == name))
                     .ok_or_else(|| fail("Backend selection changed; refresh and select again"))?;
-                self.backend_context = None;
                 (
                     1,
                     Some((name, String::new())),
@@ -3189,14 +3140,7 @@ impl Management {
             .expect("owned agent")
             .clone();
         if frame["ok"] != true {
-            if pending.stage == MODEL_LISTING {
-                // Nothing changed; the engine list stays usable for another pick.
-                return Ok(Step::Backend(Update::Rejected(
-                    text(&frame, "error", 4096)?.into(),
-                )));
-            }
             if pending.stage <= 1 {
-                self.backend_context = None;
                 self.backend_catalog = None;
                 return Ok(Step::Backend(Update::Rejected(
                     text(&frame, "error", 4096)?.into(),
@@ -3207,12 +3151,6 @@ impl Management {
             ));
         }
         let result = &frame["result"];
-        if pending.stage == MODEL_LISTING {
-            let (name, _) = pending.selection.as_ref().expect("listing target");
-            let catalog = pending.catalog.as_ref().expect("listing catalog");
-            let list = crate::backend_controls::ModelList::parse(result, catalog, name)?;
-            return Ok(Step::Backend(Update::Models(list)));
-        }
         if pending.stage == 0 {
             self.revision = self
                 .revision
@@ -3259,16 +3197,6 @@ impl Management {
                         return Ok(Step::Backend(Update::Rejected(
                             text(result, "error", 4096)?.into(),
                         )));
-                    }
-                    Some("connected")
-                        if result["mutated"] == true
-                            && result["close_required"] == false
-                            && result["backend"] == name
-                            && result["model"] == model
-                            && result["error"].is_null()
-                            && pending.observed_model =>
-                    {
-                        self.work_transition_receipt(result, true)?;
                     }
                     // App.apply_backend_change: switched and saved, the model unchosen, connected
                     // or not (a backend that does not answer leaves the seat on it, disconnected).
@@ -3399,16 +3327,8 @@ impl Management {
         let mut command = match pending.stage {
             2 => {
                 pending.mutation = Some(id.clone());
-                let model = if model.is_empty() {
-                    Value::Null
-                } else {
-                    json!(model)
-                };
-                let mut set = json!({"type":SET,"version":1,"session_id":session,"agent_id":agent,"snapshot":pending.catalog.as_ref().expect("catalog").snapshot,"name":name,"model":model});
-                if let Some(tokens) = self.backend_context.take() {
-                    set["context"] = json!(tokens);
-                }
-                set
+                // /backend names no model: Python's model_id "" until /model picks one.
+                json!({"type":SET,"version":1,"session_id":session,"agent_id":agent,"snapshot":pending.catalog.as_ref().expect("catalog").snapshot,"name":name,"model":Value::Null})
             }
             3 => json!({"type":"gui.state","include_conversations":false}),
             4 => self.history_command(&session, &name, &model)?,

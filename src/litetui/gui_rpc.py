@@ -105,7 +105,7 @@ OPERATIONS = (
     "work.native_pause_validate", "work.native_pause_apply", "work.native_pause_readback",
     "work.native_stop_validate", "work.native_stop_apply", "work.native_stop_settled",
     "work.native_control_validate", "work.native_control_apply", "work.native_control_readback",
-    "thinking.set", "context.set", "backend.set", "backends.native_models", "models.capabilities",
+    "thinking.set", "context.set", "backend.set", "models.capabilities",
     "engine.start", "engine.stop", "engine.status",
     "engine.native_inspect", "engine.native_validate", "engine.native_peer_validate", "engine.native_reconnect_validate", "engine.native_action", "engine.native_readback",
     "engine.native_config_snapshot", "engine.native_config_review", "engine.native_config_save", "engine.native_config_readback",
@@ -1153,7 +1153,7 @@ async def async_dispatch(app, cmd):
     from litetui import conversation_rewrite
     conversation_rewrite.operation_allowed(app, operation)
     _restart_gate(app, operation[4:])
-    blocking = operation in {"gui.conversations.native_compact_apply", "gui.conversations.native_compact_settled", "gui.conversations.native_rewrite_apply", "gui.conversations.native_rewrite_settled", "gui.restored_input.reconcile", "gui.restored_input.continue", "gui.restored_input.settled", "gui.conversations.open", "gui.models.load", "gui.models.unload", "gui.models.configure", "gui.models.reconnect", "gui.tools.execute", "gui.hooks.test", "gui.hooks.native_test_run", "gui.context.set", "gui.backend.set", "gui.backends.native_models", "gui.engine.start", "gui.engine.stop", "gui.engine.native_action", "gui.settings.native_save", "gui.settings.native_compact_save", "gui.settings.native_form_save", "gui.settings.native_form_restore", "gui.themes.native_save", "gui.conversations.native_apply", "gui.conversations.native_open"} or operation in {"gui.mcp.connect", "gui.mcp.disconnect", "gui.mcp.reconnect", "gui.mcp.reload", "gui.mcp.add", "gui.mcp.remove"}
+    blocking = operation in {"gui.conversations.native_compact_apply", "gui.conversations.native_compact_settled", "gui.conversations.native_rewrite_apply", "gui.conversations.native_rewrite_settled", "gui.restored_input.reconcile", "gui.restored_input.continue", "gui.restored_input.settled", "gui.conversations.open", "gui.models.load", "gui.models.unload", "gui.models.configure", "gui.models.reconnect", "gui.tools.execute", "gui.hooks.test", "gui.hooks.native_test_run", "gui.context.set", "gui.backend.set", "gui.engine.start", "gui.engine.stop", "gui.engine.native_action", "gui.settings.native_save", "gui.settings.native_compact_save", "gui.settings.native_form_save", "gui.settings.native_form_restore", "gui.themes.native_save", "gui.conversations.native_apply", "gui.conversations.native_open"} or operation in {"gui.mcp.connect", "gui.mcp.disconnect", "gui.mcp.reconnect", "gui.mcp.reload", "gui.mcp.add", "gui.mcp.remove"}
     if operation.startswith(("gui.models.native_preferences_", "gui.models.native_lifecycle_", "gui.mcp.native_lifecycle_")):
         blocking = True
     if operation == "gui.models.select":
@@ -1329,9 +1329,6 @@ async def _async_dispatch(app, cmd):
         return await restored_input.continue_input(app, cmd)
     if operation == "gui.restored_input.settled":
         return await restored_input.settled(app, cmd)
-    if operation == "gui.backends.native_models":
-        from litetui.backend_transition import candidate_models
-        return await candidate_models(app, cmd)
     if operation == "gui.backend.set":
         from litetui.backend_transition import GUARDED_FIELDS, transition
 

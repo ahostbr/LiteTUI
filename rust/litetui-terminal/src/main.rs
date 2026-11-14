@@ -891,13 +891,6 @@ fn handle_key(
                     Err(error) => chat.settings.clipboard_error(error),
                 }
             }
-            if !chat.quitting && !chat.cancelling() && chat.backend_controls.editing() {
-                match clipboard.read_text() {
-                    Ok(Some(text)) => chat.backend_controls.paste(&text),
-                    Ok(None) => {}
-                    Err(error) => chat.backend_controls.notice = error,
-                }
-            }
         }
         return input.handle(app, event);
     }
@@ -1077,17 +1070,7 @@ fn paste(app: &mut Demo, text: &str) {
         return;
     }
     if app.has_live_backend() {
-        if !app.viewport_too_small
-            && !app.stop_open()
-            && !app.has_live_approval()
-            && !app.has_live_question()
-        {
-            app.live
-                .as_mut()
-                .expect("backend selector")
-                .backend_controls
-                .paste(text);
-        }
+        // The engine picker has no text field; a paste never reaches the composer behind it.
         return;
     }
 

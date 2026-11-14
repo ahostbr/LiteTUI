@@ -1,20 +1,14 @@
 //! Source-owned backend selection. Metadata does not establish service readiness.
-use crate::{
-    composer::{Composer, Delete, Motion},
-    live::terminal_text,
-    theme::Theme,
-};
+use crate::theme::Theme;
 use crossterm::event::{
     KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
 };
 use ratatui::{Frame, layout::Rect, style::Style};
 use serde_json::Value;
 use std::{collections::HashSet, io};
-use unicode_segmentation::UnicodeSegmentation;
 
 pub const LIST: &str = "gui.backends.list";
 pub const SET: &str = "gui.backend.set";
-pub const MODELS: &str = "gui.backends.native_models";
 pub const MODEL_BYTES: usize = 1024;
 #[derive(Clone, Debug, PartialEq)]
 pub struct Entry {
@@ -42,18 +36,6 @@ pub struct Catalog {
 #[derive(Clone, Debug, PartialEq)]
 pub enum Intent {
     Read,
-    /// List the models the chosen backend serves (Python's /model after /backend).
-    Models {
-        revision: u64,
-        name: String,
-    },
-    Select {
-        revision: u64,
-        name: String,
-        model: String,
-        /// The context-length answer for a local backend; None is "Keep current".
-        context: Option<u64>,
-    },
     /// Python's /backend: switch and save the backend at once, the model unchosen (Ryan
     /// 2026-11-12: "/backend switches backend only /model displays models that backend provides").
     Switch {
@@ -64,7 +46,6 @@ pub enum Intent {
 #[derive(Clone, Debug, PartialEq)]
 pub enum Update {
     Catalog(Catalog),
-    Models(ModelList),
     Rejected(String),
     Changed { backend: String, model: String },
 }
@@ -205,28 +186,6 @@ impl Catalog {
             entries,
         })
     }
-    pub fn selection(&self, revision: u64, name: &str, model: &str) -> io::Result<()> {
-        if self.revision != revision
-            || !self.entries.iter().any(|r| r.name == name)
-            || !valid_model(model)
-        {
-            return Err(fail(
-                "Backend selection changed or model is invalid; refresh and select explicitly",
-            ));
-        }
-        if self.selected == name && self.model == model {
-            return Err(fail("That backend and model are already active"));
-        }
-        Ok(())
-    }
-}
-fn display(text: &str, offset: usize) -> String {
-    terminal_text(text)
-        .replace('\n', "\\n")
-        .replace('\t', "\\t")
-        .graphemes(true)
-        .skip(offset)
-        .collect()
 }
 /// Python LiteTUI's picker hint (litetui/picker.py DEFAULT_HINT).
 pub const PICKER_HINT: &str = "↑↓ move · Enter or click to select · Esc to cancel";
@@ -239,93 +198,10 @@ pub const CTX_FLOOR: u64 = 512;
 pub const CTX_CEILING: u64 = 1 << 20;
 
 #[derive(Clone, Debug, PartialEq)]
-pub struct ModelRow {
-    pub key: String,
-    pub label: String,
-    pub loaded: bool,
-}
-#[derive(Clone, Debug, PartialEq)]
 pub struct ContextFacts {
     pub applies_on_engine_start: bool,
     pub suggestions: std::collections::HashMap<String, u64>,
     pub remembered: std::collections::HashMap<String, u64>,
-}
-/// The models another backend serves, listed the way Python's /model lists them.
-#[derive(Clone, Debug, PartialEq)]
-pub struct ModelList {
-    pub revision: u64,
-    pub name: String,
-    pub rows: Vec<ModelRow>,
-    pub context: Option<ContextFacts>,
-}
-fn positive(value: &Value) -> io::Result<Option<u64>> {
-    match value {
-        Value::Null => Ok(None),
-        v => v
-            .as_u64()
-            .filter(|n| *n > 0)
-            .map(Some)
-            .ok_or_else(|| fail("Invalid context suggestion")),
-    }
-}
-impl ModelList {
-    pub fn parse(value: &Value, catalog: &Catalog, name: &str) -> io::Result<Self> {
-        if serde_json::to_vec(value)?.len() > 256 * 1024
-            || value["version"].as_u64() != Some(1)
-            || value["kind"] != "backend_models"
-            || value["session_id"] != catalog.session.as_str()
-            || value["agent_id"] != catalog.agent.as_str()
-            || value["snapshot"] != catalog.snapshot.as_str()
-            || value["name"] != name
-        {
-            return Err(fail(
-                "Backend model list does not match the selected backend",
-            ));
-        }
-        let mut seen = HashSet::new();
-        let mut rows = Vec::new();
-        for row in value["models"]
-            .as_array()
-            .filter(|rows| rows.len() <= 512)
-            .ok_or_else(|| fail("Invalid backend model list"))?
-        {
-            let key = text(row, "key", MODEL_BYTES)?;
-            if !valid_model(&key) || !seen.insert(key.clone()) {
-                return Err(fail("Invalid or duplicate backend model"));
-            }
-            rows.push(ModelRow {
-                key,
-                label: text(row, "label", 4096)?,
-                loaded: boolean(row, "loaded")?,
-            });
-        }
-        let context = match &value["context"] {
-            Value::Null => None,
-            facts => {
-                let mut suggestions = std::collections::HashMap::new();
-                let mut remembered = std::collections::HashMap::new();
-                for row in &rows {
-                    if let Some(n) = positive(&facts["suggestions"][&row.key])? {
-                        suggestions.insert(row.key.clone(), n);
-                    }
-                    if let Some(n) = positive(&facts["remembered"][&row.key])? {
-                        remembered.insert(row.key.clone(), n);
-                    }
-                }
-                Some(ContextFacts {
-                    applies_on_engine_start: boolean(facts, "applies_on_engine_start")?,
-                    suggestions,
-                    remembered,
-                })
-            }
-        };
-        Ok(Self {
-            revision: catalog.revision,
-            name: name.to_owned(),
-            rows,
-            context,
-        })
-    }
 }
 /// The "Type a number of tokens" rule of litetui/context_choice.parse_context.
 pub fn parse_context(text: &str) -> Result<u64, String> {
@@ -362,23 +238,12 @@ fn group(value: u64) -> String {
     out
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Stage {
-    Engines,
-    Models,
-    Context,
-}
 pub struct View {
     pub open: bool,
     pub waiting: bool,
     pub notice: String,
     pub catalog: Option<Catalog>,
-    pub models: Option<ModelList>,
-    stage: Stage,
-    editor: Composer,
     selected: usize,
-    model_selected: usize,
-    context_error: String,
     intent: Option<Intent>,
     pending: Option<String>,
     visible: bool,
@@ -395,12 +260,7 @@ impl Default for View {
             waiting: false,
             notice: String::new(),
             catalog: None,
-            models: None,
-            stage: Stage::Engines,
-            editor: Composer::new(64, 0),
             selected: 0,
-            model_selected: 0,
-            context_error: String::new(),
             intent: None,
             pending: None,
             visible: false,
@@ -426,8 +286,6 @@ impl View {
         self.waiting = true;
         self.preselect = None;
         self.catalog = None;
-        self.models = None;
-        self.stage = Stage::Engines;
         self.intent = Some(Intent::Read);
         self.pending = None;
         self.notice = "Reading the engines…".into();
@@ -453,26 +311,11 @@ impl View {
         self.waiting = false;
         self.pending = None;
         self.catalog = None;
-        self.models = None;
-        self.stage = Stage::Engines;
-        self.editor.clear();
     }
     pub fn hide(&mut self) {
         self.visible = false;
         self.pressed = None;
         self.hits.clear();
-    }
-    /// The context field's text (the only free text in this flow).
-    pub fn model_text(&self) -> &str {
-        self.editor.text()
-    }
-    pub fn editing(&self) -> bool {
-        self.open && self.visible && !self.waiting && self.stage == Stage::Context
-    }
-    pub fn paste(&mut self, text: &str) {
-        if self.editing() && !text.chars().any(char::is_control) {
-            self.editor.insert(text);
-        }
     }
     pub fn observe(&mut self, update: Update) -> io::Result<()> {
         if let Update::Changed { backend, .. } = &update
@@ -494,7 +337,7 @@ impl View {
                 if let Some(wanted) = self.preselect.take() {
                     match catalog.entries.iter().position(|r| r.name == wanted) {
                         Some(index) => {
-                            // `/backend NAME` switches at once in Python: go straight to its models.
+                            // `/backend NAME` switches at once in Python.
                             self.selected = index;
                             picked = true;
                         }
@@ -512,39 +355,18 @@ impl View {
                     }
                 }
                 self.catalog = Some(catalog);
-                self.models = None;
-                self.stage = Stage::Engines;
                 if picked {
                     self.open = true;
                     self.pick();
                 }
             }
-            Update::Models(list) => {
-                // Python opens /model with nothing chosen after a backend switch: the first row.
-                self.model_selected = 0;
-                self.notice = if list.rows.is_empty() {
-                    format!("No models discovered on {}.", list.name)
-                } else {
-                    String::new()
-                };
-                self.stage = if list.rows.is_empty() {
-                    Stage::Engines
-                } else {
-                    Stage::Models
-                };
-                self.models = Some(list);
-            }
             Update::Rejected(error) => {
                 self.preselect = None;
                 self.pending = None;
-                if self.stage == Stage::Engines {
-                    // Python closes its picker and says why in the chat. Keeping this open on an
-                    // emptied list left nothing for the arrows or Enter to act on (Ryan 2026-11-12).
-                    self.catalog = None;
-                    self.close();
-                } else {
-                    self.stage = Stage::Models;
-                }
+                // Python closes its picker and says why in the chat. Keeping this open on an
+                // emptied list left nothing for the arrows or Enter to act on (Ryan 2026-11-12).
+                self.catalog = None;
+                self.close();
                 self.notice = error;
             }
             Update::Changed { .. } => {
@@ -554,84 +376,31 @@ impl View {
         Ok(())
     }
     fn rows(&self) -> usize {
-        match self.stage {
-            Stage::Engines => self.catalog.as_ref().map_or(0, |c| c.entries.len()),
-            Stage::Models => self.models.as_ref().map_or(0, |m| m.rows.len()),
-            Stage::Context => 0,
-        }
-    }
-    fn cursor(&mut self) -> &mut usize {
-        if self.stage == Stage::Models {
-            &mut self.model_selected
-        } else {
-            &mut self.selected
-        }
+        self.catalog.as_ref().map_or(0, |c| c.entries.len())
     }
     fn move_to(&mut self, index: usize) {
-        let last = self.rows().saturating_sub(1);
-        *self.cursor() = index.min(last);
+        self.selected = index.min(self.rows().saturating_sub(1));
     }
     fn pick(&mut self) {
-        match self.stage {
-            Stage::Engines => {
-                let Some(c) = &self.catalog else { return };
-                let Some(r) = c.entries.get(self.selected) else {
-                    return;
-                };
-                if r.selected {
-                    // plugins/model_switch._switch_backend
-                    self.notice = format!("Already on {}", r.name);
-                    self.close();
-                    return;
-                }
-                // App.apply_backend_change: the switch happens now; /model lists its models.
-                // Python's own lines ("Backend → NAME; reconnecting…") arrive as system lines.
-                self.intent = Some(Intent::Switch {
-                    revision: c.revision,
-                    name: r.name.clone(),
-                });
-                self.pending = Some(r.name.clone());
-                self.waiting = true;
-                self.notice.clear();
-                self.hide();
-            }
-            Stage::Models => {
-                let Some(m) = &self.models else { return };
-                let Some(row) = m.rows.get(self.model_selected) else {
-                    return;
-                };
-                if let Some(facts) = &m.context {
-                    let value = facts.suggestions.get(&row.key).copied();
-                    self.editor.clear();
-                    if let Some(value) = value {
-                        self.editor.insert(&value.to_string());
-                    }
-                    self.context_error.clear();
-                    self.stage = Stage::Context;
-                } else {
-                    self.select(None);
-                }
-            }
-            Stage::Context => match parse_context(self.editor.text()) {
-                Ok(tokens) => self.select(Some(tokens)),
-                Err(error) => self.context_error = error,
-            },
-        }
-    }
-    fn select(&mut self, context: Option<u64>) {
-        let Some(m) = &self.models else { return };
-        let Some(row) = m.rows.get(self.model_selected) else {
+        let Some(c) = &self.catalog else { return };
+        let Some(r) = c.entries.get(self.selected) else {
             return;
         };
-        self.intent = Some(Intent::Select {
-            revision: m.revision,
-            name: m.name.clone(),
-            model: row.key.clone(),
-            context,
+        if r.selected {
+            // plugins/model_switch._switch_backend
+            self.notice = format!("Already on {}", r.name);
+            self.close();
+            return;
+        }
+        // App.apply_backend_change: the switch happens now; /model lists its models.
+        // Python's own lines ("Backend → NAME; reconnecting…") arrive as system lines.
+        self.intent = Some(Intent::Switch {
+            revision: c.revision,
+            name: r.name.clone(),
         });
-        self.pending = Some(m.name.clone());
+        self.pending = Some(r.name.clone());
         self.waiting = true;
-        self.notice = format!("Backend → {}; reconnecting…", m.name);
+        self.notice.clear();
         self.hide();
     }
     pub fn key(&mut self, key: KeyEvent) {
@@ -639,43 +408,16 @@ impl View {
             return;
         }
         if key.code == KeyCode::Esc && key.kind == KeyEventKind::Press {
-            match self.stage {
-                // context_choice: Esc is "Keep current"; the pick itself still happens.
-                Stage::Context if self.open && self.visible && !self.waiting => self.select(None),
-                Stage::Models if !self.waiting => {
-                    self.stage = Stage::Engines;
-                    self.models = None;
-                    self.notice.clear();
-                }
-                _ => self.close(),
-            }
+            self.close();
             return;
         }
         if !self.open || !self.visible || self.waiting {
             return;
         }
-        if self.stage == Stage::Context {
-            let control = key.modifiers.contains(KeyModifiers::CONTROL);
-            match key.code {
-                KeyCode::Enter if key.kind == KeyEventKind::Press => self.pick(),
-                KeyCode::Char('a') if control => self.editor.select_all(),
-                KeyCode::Char(c) if !control && !c.is_control() => {
-                    self.editor.insert(&c.to_string())
-                }
-                KeyCode::Left => self.editor.move_cursor(Motion::Left, false),
-                KeyCode::Right => self.editor.move_cursor(Motion::Right, false),
-                KeyCode::Home => self.editor.move_cursor(Motion::Home, false),
-                KeyCode::End => self.editor.move_cursor(Motion::End, false),
-                KeyCode::Backspace => self.editor.delete(Delete::Left),
-                KeyCode::Delete => self.editor.delete(Delete::Right),
-                _ => {}
-            }
-            return;
-        }
         if !key.modifiers.is_empty() {
             return;
         }
-        let current = *self.cursor();
+        let current = self.selected;
         let last = self.rows().saturating_sub(1);
         match key.code {
             KeyCode::Up => self.move_to(current.saturating_sub(1)),
@@ -708,7 +450,7 @@ impl View {
                 }
             }
             MouseEventKind::ScrollUp | MouseEventKind::ScrollDown if hit.is_some() => {
-                let current = *self.cursor();
+                let current = self.selected;
                 self.move_to(if event.kind == MouseEventKind::ScrollUp {
                     current.saturating_sub(1)
                 } else {
@@ -718,7 +460,7 @@ impl View {
             _ => self.pressed = None,
         }
     }
-    /// Python's picker (picker_box): the engine list, then the chosen engine's models.
+    /// Python's picker (picker_box): the engine list.
     pub fn draw(&mut self, frame: &mut Frame, area: Rect, t: &Theme) {
         self.visible = false;
         // Python closes the picker on a pick and opens the next one when its rows exist.
@@ -726,77 +468,32 @@ impl View {
             self.hide();
             return;
         }
-        let (title, labels, cursor): (&str, Vec<String>, usize) = match self.stage {
-            Stage::Engines => (
-                ENGINE_TITLE,
-                self.catalog.as_ref().map_or_else(Vec::new, |c| {
-                    c.entries
-                        .iter()
-                        .map(|r| match &r.mark {
-                            Some(mark) => format!("{}  · {mark}", r.label),
-                            None => r.label.clone(),
-                        })
-                        .collect()
-                }),
-                self.selected,
-            ),
-            Stage::Models | Stage::Context => (
-                MODEL_TITLE,
-                self.models.as_ref().map_or_else(Vec::new, |m| {
-                    m.rows.iter().map(|r| r.label.clone()).collect()
-                }),
-                self.model_selected,
-            ),
-        };
+        let labels: Vec<String> = self.catalog.as_ref().map_or_else(Vec::new, |c| {
+            c.entries
+                .iter()
+                .map(|r| match &r.mark {
+                    Some(mark) => format!("{}  · {mark}", r.label),
+                    None => r.label.clone(),
+                })
+                .collect()
+        });
         let mut extra: Vec<(String, Style)> = Vec::new();
         if !self.notice.is_empty() {
             // A refused pick says why where the next attempt is made.
             extra.push((self.notice.clone(), Style::default().fg(t.error)));
         }
-        if self.stage == Stage::Context {
-            let model = self
-                .models
-                .as_ref()
-                .and_then(|m| m.rows.get(self.model_selected));
-            let key = model.map_or("", |r| r.key.as_str());
-            let facts = self.models.as_ref().and_then(|m| m.context.as_ref());
-            let mut hint = if facts.is_some_and(|f| f.applies_on_engine_start) {
-                "Applies on the next /engine start (stop a running engine first).".to_owned()
-            } else {
-                "The model is loaded at this size.".to_owned()
-            };
-            if let Some(last) = facts.and_then(|f| f.remembered.get(key)) {
-                hint.push_str(&format!(" Last used for this model: {}.", group(*last)));
-            }
-            let plain = Style::default().fg(t.foreground);
-            extra.push((String::new(), plain));
-            extra.push((
-                format!("Context length for {} (tokens)", display(key, 0)),
-                plain,
-            ));
-            extra.push((hint, Style::default().fg(t.thinking_text)));
-            extra.push((format!("{}▏", display(self.editor.text(), 0)), plain));
-            if !self.context_error.is_empty() {
-                extra.push((self.context_error.clone(), Style::default().fg(t.error)));
-            }
-            extra.push(("Enter: Set context · Esc: Keep current".into(), plain));
-        }
         let drawn = crate::picker_box::draw(
             frame,
             area,
             t,
-            title,
+            ENGINE_TITLE,
             &labels,
-            cursor,
+            self.selected,
             &mut self.scroll,
             &extra,
             PICKER_HINT,
         );
-        self.hits = if self.stage == Stage::Context {
-            Vec::new()
-        } else {
-            drawn.hits
-        };
+        self.hits = drawn.hits;
         self.visible = self.open && !self.waiting && drawn.rect.width > 0;
     }
 }

@@ -1,6 +1,6 @@
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 use litetui_terminal::{
-    backend_controls::{Catalog, Intent, ModelList, Update, View},
+    backend_controls::{Catalog, Intent, Update, View},
     management::{Management, Step},
 };
 use ratatui::{Terminal, backend::TestBackend};
@@ -36,35 +36,6 @@ fn draw(v: &mut View, w: u16, h: u16) -> String {
         .collect::<Vec<_>>()
         .join("\n")
 }
-fn listing(models: Value, context: Value) -> Value {
-    json!({"version":1,"kind":"backend_models","session_id":SESSION,"agent_id":AGENT,"snapshot":"a".repeat(64),"name":"lmstudio","models":models,"context":context})
-}
-fn models_view(context: Value) -> View {
-    let mut v = view();
-    draw(&mut v, 80, 28);
-    v.key(key(KeyCode::Down));
-    v.key(key(KeyCode::Enter));
-    // /backend switches at once now (Python's App.apply_backend_change); the model stage below is
-    // reached only by a listing, which nothing in /backend asks for any more.
-    assert_eq!(
-        v.take_intent(),
-        Some(Intent::Switch {
-            revision: 7,
-            name: "lmstudio".into()
-        })
-    );
-    let list = ModelList::parse(
-        &listing(
-            json!([{"key":"a-model","label":"  a-model  · lmstudio  · loaded","loaded":true},{"key":"b-model","label":"  b-model  · lmstudio","loaded":false}]),
-            context,
-        ),
-        &catalog(),
-        "lmstudio",
-    )
-    .unwrap();
-    v.observe(Update::Models(list)).unwrap();
-    v
-}
 #[test]
 fn metadata_is_owned_bounded_and_never_readiness() {
     let c = catalog();
@@ -72,17 +43,6 @@ fn metadata_is_owned_bounded_and_never_readiness() {
     assert!(c.requested_native);
     assert!(c.effective_engine.is_none());
     assert_eq!(c.entries.len(), 3);
-    assert!(c.selection(7, "lmstudio", "new").is_ok());
-    for (r, b, m) in [
-        (8, "lmstudio", "new"),
-        (7, "foreign", "new"),
-        (7, "custom", "old"),
-        (7, "lmstudio", " "),
-        (7, "lmstudio", " leading"),
-        (7, "lmstudio", "new\n"),
-    ] {
-        assert!(c.selection(r, b, m).is_err());
-    }
 }
 #[test]
 fn malformed_or_foreign_catalog_cannot_be_presented() {
@@ -158,74 +118,6 @@ fn engine_picker_reads_like_python_with_readiness_marks() {
     assert!(!text.contains("Model:"), "{text}");
 }
 #[test]
-fn picking_a_loaded_model_on_a_hosted_backend_switches_without_a_context_question() {
-    let mut v = models_view(Value::Null);
-    let text = draw(&mut v, 80, 28);
-    assert!(text.contains("Select a model") && text.contains("a-model  · lmstudio  · loaded"));
-    v.key(key(KeyCode::Enter));
-    assert_eq!(
-        v.take_intent(),
-        Some(Intent::Select {
-            revision: 7,
-            name: "lmstudio".into(),
-            model: "a-model".into(),
-            context: None,
-        })
-    );
-    assert!(v.waiting);
-    assert!(
-        v.observe(Update::Changed {
-            backend: "foreign".into(),
-            model: "a-model".into()
-        })
-        .is_err()
-    );
-    v.observe(Update::Changed {
-        backend: "lmstudio".into(),
-        model: "a-model".into(),
-    })
-    .unwrap();
-    assert!(!v.owns_input());
-}
-#[test]
-fn local_backend_asks_context_and_esc_keeps_current() {
-    let facts = json!({"setting":"default_context_length","applies_on_engine_start":false,"suggestions":{"a-model":null,"b-model":8192},"remembered":{"a-model":null,"b-model":8192}});
-    let mut v = models_view(facts.clone());
-    draw(&mut v, 80, 28);
-    v.key(key(KeyCode::Down));
-    v.key(key(KeyCode::Enter));
-    let text = draw(&mut v, 80, 28);
-    assert!(
-        text.contains("Context length for b-model (tokens)"),
-        "{text}"
-    );
-    assert!(text.contains("The model is loaded at this size. Last used for this model: 8,192."));
-    assert_eq!(v.model_text(), "8192");
-    v.key(key(KeyCode::Esc));
-    assert_eq!(
-        v.take_intent(),
-        Some(Intent::Select {
-            revision: 7,
-            name: "lmstudio".into(),
-            model: "b-model".into(),
-            context: None,
-        })
-    );
-    let mut v = models_view(facts);
-    draw(&mut v, 80, 28);
-    v.key(key(KeyCode::Enter));
-    assert_eq!(v.model_text(), "");
-    v.paste("131,072");
-    v.key(key(KeyCode::Enter));
-    assert!(matches!(
-        v.take_intent(),
-        Some(Intent::Select {
-            context: Some(131072),
-            ..
-        })
-    ));
-}
-#[test]
 fn context_answer_follows_python_parse_rules() {
     use litetui_terminal::backend_controls::parse_context;
     assert_eq!(parse_context(" 100_000 "), Ok(100000));
@@ -266,37 +158,6 @@ fn current_engine_says_already_on_and_mouse_click_selects_like_python() {
     v.mouse(m(MouseEventKind::Down(MouseButton::Left)));
     v.mouse(m(MouseEventKind::Up(MouseButton::Left)));
     assert!(matches!(v.take_intent(), Some(Intent::Switch { name, .. }) if name == "lmstudio"));
-}
-#[test]
-fn foreign_or_malformed_model_lists_are_refused() {
-    for fault in [
-        "kind",
-        "snapshot",
-        "name",
-        "duplicate",
-        "control",
-        "suggestion",
-    ] {
-        let mut d = listing(
-            json!([{"key":"a","label":"a","loaded":true}]),
-            json!({"setting":"default_context_length","applies_on_engine_start":false,"suggestions":{"a":4096},"remembered":{"a":null}}),
-        );
-        match fault {
-            "kind" => d["kind"] = json!("support_metadata"),
-            "snapshot" => d["snapshot"] = json!("b".repeat(64)),
-            "name" => d["name"] = json!("codex"),
-            "duplicate" => {
-                d["models"] = json!([{"key":"a","label":"a","loaded":true},{"key":"a","label":"a","loaded":true}])
-            }
-            "control" => d["models"][0]["key"] = json!("a\n"),
-            "suggestion" => d["context"]["suggestions"]["a"] = json!(-1),
-            _ => unreachable!(),
-        }
-        assert!(
-            ModelList::parse(&d, &catalog(), "lmstudio").is_err(),
-            "{fault}"
-        );
-    }
 }
 #[test]
 fn minimum_geometry_and_all_themes_render() {
@@ -341,11 +202,9 @@ fn prepare(m: &mut Management) -> Value {
         panic!()
     };
     let before = m
-        .request_backend(Intent::Select {
+        .request_backend(Intent::Switch {
             revision: c.revision,
             name: "lmstudio".into(),
-            model: "new".into(),
-            context: None,
         })
         .unwrap();
     assert_eq!(before["type"], "gui.conversations.read");
@@ -353,38 +212,51 @@ fn prepare(m: &mut Management) -> Value {
     write(reply(m, &before, history()).unwrap())
 }
 fn emission(m: &mut Management, c: &Value, foreign: bool) -> std::io::Result<Step> {
-    let event = json!({"type":"model_state","backend":"lmstudio","model":"new"});
+    let event = json!({"type":"model_state","backend":"lmstudio","model":null});
     assert!(matches!(m.accept(event.clone()).unwrap(), Step::Ignore));
     m.accept(json!({"type":"gui.event","event_id":"12345678-1234-4123-8123-123456789abc","session_id":if foreign{AGENT}else{SESSION},"operation_id":c["id"],"execution_id":null,"hook_id":null,"source":"rpc","event":event}))
 }
 fn receipt(status: &str) -> Value {
-    json!({"version":1,"kind":"backend_transition","status":status,"mutated":status=="connected","close_required":status=="failed","session_id":SESSION,"agent_id":AGENT,"snapshot":"a".repeat(64),"backend":if status=="connected"{"lmstudio"}else{"custom"},"model":if status=="connected"{"new"}else{"old"},"error":if status=="connected"{Value::Null}else{json!("source refusal")}})
+    if status == "switched" {
+        return json!({"version":1,"kind":"backend_transition","status":"switched","mutated":true,"close_required":false,"session_id":SESSION,"agent_id":AGENT,"snapshot":"a".repeat(64),"backend":"lmstudio","model":null,"error":null,"connected":true,"offer_model_picker":false});
+    }
+    json!({"version":1,"kind":"backend_transition","status":status,"mutated":false,"close_required":status=="failed","session_id":SESSION,"agent_id":AGENT,"snapshot":"a".repeat(64),"backend":"custom","model":"old","error":json!("source refusal")})
+}
+/// gui.state after /backend: the model unchosen (null), as Python publishes it.
+fn switched_state() -> Value {
+    let mut v = state("lmstudio", "");
+    v["model"]["model"] = Value::Null;
+    v
+}
+fn switched_queue() -> Value {
+    let mut v = queue();
+    v["model"] = json!("");
+    v
 }
 #[test]
-fn connected_receipt_waits_for_all_independent_readbacks_before_identity_change() {
+fn switched_receipt_waits_for_all_independent_readbacks_before_identity_change() {
     let mut m = connected();
     let set = prepare(&mut m);
     assert_eq!(set["type"], "gui.backend.set");
-    assert_eq!(set["model"], "new");
+    assert!(set["model"].is_null());
     emission(&mut m, &set, false).unwrap();
-    let st = write(reply(&mut m, &set, receipt("connected")).unwrap());
+    let st = write(reply(&mut m, &set, receipt("switched")).unwrap());
     assert_eq!(st["type"], "gui.state");
     assert_eq!(st["include_conversations"], false);
     assert!(!m.ready());
     assert_eq!(m.backend(), Some("custom"));
-    let h = write(reply(&mut m, &st, state("lmstudio", "new")).unwrap());
+    let h = write(reply(&mut m, &st, switched_state()).unwrap());
     assert_eq!(h["max_response_bytes"], 1048576);
     let list = write(reply(&mut m, &h, history()).unwrap());
-    let q = write(reply(&mut m, &list, data("lmstudio", "new")).unwrap());
+    let q = write(reply(&mut m, &list, data("lmstudio", "")).unwrap());
     assert!(!m.ready());
-    let Step::BackendChanged(changed) = reply(&mut m, &q, queue()).unwrap() else {
+    let Step::BackendChanged(changed) = reply(&mut m, &q, switched_queue()).unwrap() else {
         panic!()
     };
     assert_eq!(changed.history.messages.len(), 2);
     assert!(m.ready());
     assert_eq!(m.backend(), Some("lmstudio"));
-    assert_eq!(m.model(), Some("new"));
-    m.prompt("fresh-prompt").unwrap();
+    assert_eq!(m.model(), Some(""));
 }
 /// Python's /backend through the owned phases: the switch saves the backend with no model
 /// (`"model": null`), every readback carries the unchosen model (null in gui.state, "" in the
@@ -465,20 +337,20 @@ fn unmutated_refusal_is_retryable_but_failure_or_forged_receipt_closes() {
     assert!(m.ready());
     assert!(m.request_backend(Intent::Read).is_ok());
     for fault in [
-        "failed", "mutated", "agent", "snapshot", "target", "no-event",
+        "failed", "mutated", "agent", "snapshot", "target", "backend", "error",
     ] {
         let mut m = connected();
         let set = prepare(&mut m);
-        let mut r = receipt("connected");
-        if fault != "no-event" {
-            emission(&mut m, &set, false).unwrap();
-        }
+        let mut r = receipt("switched");
+        emission(&mut m, &set, false).unwrap();
         match fault {
             "failed" => r = receipt("failed"),
             "mutated" => r["mutated"] = json!(false),
             "agent" => r["agent_id"] = json!(SESSION),
             "snapshot" => r["snapshot"] = json!("b".repeat(64)),
             "target" => r["model"] = json!("fallback"),
+            "backend" => r["backend"] = json!("codex"),
+            "error" => r["error"] = json!("a switched receipt with an error"),
             _ => {}
         }
         assert!(reply(&mut m, &set, r).is_err(), "{fault}");
@@ -494,8 +366,8 @@ fn foreign_transition_event_and_readback_contradictions_fail_closed() {
         let mut m = connected();
         let set = prepare(&mut m);
         emission(&mut m, &set, false).unwrap();
-        let st = write(reply(&mut m, &set, receipt("connected")).unwrap());
-        let mut v = state("lmstudio", "new");
+        let st = write(reply(&mut m, &set, receipt("switched")).unwrap());
+        let mut v = switched_state();
         match fault {
             "session" => v["session_id"] = json!(AGENT),
             "state" => v["model"]["backend"] = json!("custom"),
@@ -527,7 +399,7 @@ fn foreign_transition_event_and_readback_contradictions_fail_closed() {
                 } else {
                     "lmstudio"
                 },
-                "new",
+                "",
             ),
         );
         if fault == "catalog" {
@@ -535,7 +407,7 @@ fn foreign_transition_event_and_readback_contradictions_fail_closed() {
             continue;
         }
         let q = write(r.unwrap());
-        let mut v = queue();
+        let mut v = switched_queue();
         v["model"] = json!("foreign");
         assert!(reply(&mut m, &q, v).is_err());
     }
@@ -549,11 +421,9 @@ fn unsupported_history_is_rejected_before_mutation_and_empty_owned_history_is_va
         panic!()
     };
     let before = m
-        .request_backend(Intent::Select {
+        .request_backend(Intent::Switch {
             revision: c.revision,
             name: "lmstudio".into(),
-            model: "new".into(),
-            context: None,
         })
         .unwrap();
     let mut h = history();
@@ -575,28 +445,6 @@ fn unsupported_history_is_rejected_before_mutation_and_empty_owned_history_is_va
     assert!(litetui_terminal::backend_controls::history(&h, SESSION).is_err());
 }
 
-#[test]
-fn over_limit_explicit_model_fails_before_any_management_command() {
-    let c = catalog();
-    assert!(c.selection(7, "lmstudio", &"x".repeat(1024)).is_ok());
-    assert!(c.selection(7, "lmstudio", &"x".repeat(1025)).is_err());
-    let mut m = connected();
-    let read = m.request_backend(Intent::Read).unwrap();
-    let Step::Backend(Update::Catalog(c)) = reply(&mut m, &read, data("custom", "old")).unwrap()
-    else {
-        panic!()
-    };
-    assert!(
-        m.request_backend(Intent::Select {
-            revision: c.revision,
-            name: "lmstudio".into(),
-            model: "x".repeat(1025),
-            context: None,
-        })
-        .is_err()
-    );
-    assert!(m.ready());
-}
 #[test]
 fn settings_requires_fresh_unchanged_owned_state_and_masks_secrets() {
     use litetui_terminal::settings_view::{Intent, Update};
@@ -664,11 +512,9 @@ fn oversized_source_history_refusal_keeps_original_backend_ready_without_mutatio
         panic!()
     };
     let before = m
-        .request_backend(Intent::Select {
+        .request_backend(Intent::Switch {
             revision: c.revision,
             name: "lmstudio".into(),
-            model: "new".into(),
-            context: None,
         })
         .unwrap();
     assert_eq!(before["type"], "gui.conversations.read");
