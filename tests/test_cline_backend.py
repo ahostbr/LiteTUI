@@ -244,15 +244,21 @@ def test_settings_controls_mark_what_applies_to_clinepass():
 def test_clinepass_backend_saved_on_one_conversation_stays_there(tmp_path):
     """the user: separate LiteTUI instances must stay separate. Choosing ClinePass
     in one conversation's settings leaves another conversation's backend alone."""
+    from _owned_seat import conversation_id, owned_session
     from litetui.settings_scope import SETTING_SPECS
     from litetui.settings_service import SettingChange, SettingsService
 
-    svc = SettingsService(tmp_path)
-    a, b = svc.snapshot('a'), svc.snapshot('b')
+    # Conversation writes need an owned agent session (e52007fe), and an owned agent's
+    # backend is its authority, shared by its conversations (a2f8e823): the separate
+    # instance the choice must not leak to is another agent.
+    svc = SettingsService(tmp_path, agent_session=owned_session(tmp_path))
+    other = SettingsService(tmp_path, agent_session=owned_session(tmp_path, 'Other'))
+    A, B = conversation_id('a'), conversation_id('b')
+    a, b = svc.snapshot(A), other.snapshot(B)
     scope = SETTING_SPECS['backend'].scope.value
-    assert svc.save_patch('a', [SettingChange('backend', 'cline', scope)], a.revisions).fully_saved
-    assert svc.snapshot('a').saved.backend == 'cline'
-    assert svc.snapshot('b').saved.backend == b.saved.backend
+    assert svc.save_patch(A, [SettingChange('backend', 'cline', scope)], a.revisions).fully_saved
+    assert svc.snapshot(A).saved.backend == 'cline'
+    assert other.snapshot(B).saved.backend == b.saved.backend
 
 
 @pytest.mark.asyncio

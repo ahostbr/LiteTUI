@@ -57,17 +57,20 @@ async def test_textual_parent_timer_applies_real_durable_outcome(tmp_path):
     from litetui.app import LiteTUI
     from litetui.conversation import ConversationRepository
     from litetui.agent_parent_delivery import receipt_message
-    store = ConversationRepository()
-    store.convo_id = 'parent-convo'
-    store.convo_dir = tmp_path / '.convos' / 'parent-convo'
+    import json
+    from _owned_seat import conversation_id, owned_session
+    # History writes need an owned agent session (e52007fe); owned folders are UUIDs.
+    parent_convo = conversation_id('parent-convo')
+    store = ConversationRepository(agent_session=owned_session(tmp_path))
+    store.stage(parent_convo)
     store.convo_dir.mkdir(parents=True)
-    store.convo_path = store.convo_dir / 'convo.jsonl'
-    store.convo_path.write_text('{"type":"meta","id":"parent-convo"}\n')
+    store.convo_path.write_text(json.dumps({'type': 'meta', 'id': parent_convo}) + '\n')
+    store.pending = False  # materialized on disk, as test_agent_repository's owned cases do
     store.acquire()
     registry = AgentRegistry(tmp_path / 'registry.sqlite')
     inbox = AgentInbox(tmp_path / 'inbox.sqlite')
     receipts = ParentReceipts(tmp_path / 'receipts.sqlite')
-    registry.claim('parent', 'child', limit=1, parent_conversation='parent-convo')
+    registry.claim('parent', 'child', limit=1, parent_conversation=parent_convo)
     registry.bind('parent', 'child', conversation_id='child-convo', pid=123, created='stamp')
     outcome = {'child_id': 'child', 'conversation_id': 'child-convo', 'status': 'completed',
                'summary': 'result', 'cleanup': {'state': 'confirmed'}, 'evidence': []}

@@ -1,25 +1,29 @@
+import json
 from types import SimpleNamespace
 import pytest
+from _owned_seat import conversation_id, owned_session
 from litetui.conversation import ConversationRepository
 from litetui.agent_receipts import ParentReceipts
 from litetui.agent_parent_delivery import apply_receipts, receipt_message
 
+# History writes need an owned agent session (e52007fe); owned folders are UUIDs.
+ORIGINAL = conversation_id('original')
+
 
 @pytest.fixture
 def state(tmp_path):
-    store = ConversationRepository()
-    store.convo_id = 'original'
-    store.convo_dir = tmp_path / '.convos' / 'original'
+    store = ConversationRepository(agent_session=owned_session(tmp_path))
+    store.stage(ORIGINAL)
     store.convo_dir.mkdir(parents=True)
-    store.convo_path = store.convo_dir / 'convo.jsonl'
-    store.convo_path.write_text('{"type":"meta","id":"original"}\n')
+    store.convo_path.write_text(json.dumps({'type': 'meta', 'id': ORIGINAL}) + '\n')
+    store.pending = False  # materialized on disk, as test_agent_repository's owned cases do
     store.acquire()
-    app = SimpleNamespace(store=store, convo_id='original', conversation=[], _chat_running=lambda: False)
+    app = SimpleNamespace(store=store, convo_id=ORIGINAL, conversation=[], _chat_running=lambda: False)
     receipts = ParentReceipts(tmp_path / 'receipts.sqlite')
     event = {'completion_id': 'completion', 'result': {
         'child_id': 'child', 'conversation_id': 'child-convo', 'status': 'failed',
         'summary': 'tool failed', 'cleanup': {'state': 'confirmed'}, 'evidence': []}}
-    receipts.accept_for_conversation('parent', 'original', event)
+    receipts.accept_for_conversation('parent', ORIGINAL, event)
     yield app, receipts, event
     store.release()
 
