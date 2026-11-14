@@ -162,7 +162,7 @@ impl Binding {
             session: uuid(v, "session_id")?,
             agent: uuid(v, "agent_id")?,
             backend: text(v, "backend", 64)?,
-            model: text(v, "model", 1024)?,
+            model: life::model(v, "model")?,
         };
         if identity != self.identity || hash(v, "work_instance")? != self.work_instance {
             return Err(bad("Runtime control changed captured epoch"));

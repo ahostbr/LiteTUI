@@ -6274,6 +6274,8 @@ class LiteTUI(App):
             # The title bar as this app draws it ("LiteTUI — engine · model · tools · think · cwd"),
             # so a native frontend shows the same header (Ryan 2026-11-12, start screen 1:1).
             "title": LiteTUI._header_text(self),
+            # The footer's level, so a native frontend keeps it across a backend switch.
+            "thinking": getattr(self, "thinking_level", None) or "default",
         }
 
     def _header_text(self) -> str | None:
@@ -7581,7 +7583,7 @@ class LiteTUI(App):
         except Exception:  # noqa: BLE001 — a spill must never break a submit
             return None
 
-    def apply_backend_change(self, choice: str) -> None:
+    def apply_backend_change(self, choice: str):
         """Move this app onto another engine. THE one place that does it.
 
         🔴 IT LIVES HERE BECAUSE app.py MAY NOT IMPORT A PLUGIN. The first cut
@@ -7644,7 +7646,8 @@ class LiteTUI(App):
         self.system_message(f"Backend → {choice}; reconnecting…")
         if getattr(self, '_agent_session', None) is not None and self._agent_session.authority.model is None:
             self.system_message(_no_model_words(choice))
-        self.connect()
+        # The connection worker, so a native frontend's switch can wait for it (backend_transition).
+        return self.connect()
 
     def _assistant_bubble(self) -> AssistantMessage:
         log = self.query_one("#chat-log")

@@ -54,6 +54,12 @@ pub enum Intent {
         /// The context-length answer for a local backend; None is "Keep current".
         context: Option<u64>,
     },
+    /// Python's /backend: switch and save the backend at once, the model unchosen (Ryan
+    /// 2026-11-12: "/backend switches backend only /model displays models that backend provides").
+    Switch {
+        revision: u64,
+        name: String,
+    },
 }
 #[derive(Clone, Debug, PartialEq)]
 pub enum Update {
@@ -69,6 +75,9 @@ pub struct Changed {
     pub history: crate::resume::History,
     pub queue: crate::restored_queue::Snapshot,
     pub policy: Value,
+    /// Python's App._offer_unchosen_model: open /model now (a backend-only switch whose backend
+    /// lists models, once a session).
+    pub offer_models: bool,
 }
 fn fail(text: &str) -> io::Error {
     io::Error::other(text.to_owned())
@@ -130,8 +139,12 @@ impl Catalog {
         }
         let selected = text(value, "selected_backend", 128)?;
         let configured = text(value, "configured_backend", 128)?;
-        let model = text(value, "selected_model", MODEL_BYTES)?;
-        if !valid_model(&model) {
+        // Empty after /backend: Python leaves the model unchosen until /model picks one.
+        let model = value["selected_model"]
+            .as_str()
+            .map(str::to_owned)
+            .ok_or_else(|| fail("Invalid backend metadata selected_model"))?;
+        if !model.is_empty() && !valid_model(&model) {
             return Err(fail("Invalid current backend model"));
         }
         let engine = &value["codex_engine"];
@@ -571,12 +584,15 @@ impl View {
                     self.close();
                     return;
                 }
-                self.intent = Some(Intent::Models {
+                // App.apply_backend_change: the switch happens now; /model lists its models.
+                // Python's own lines ("Backend → NAME; reconnecting…") arrive as system lines.
+                self.intent = Some(Intent::Switch {
                     revision: c.revision,
                     name: r.name.clone(),
                 });
+                self.pending = Some(r.name.clone());
                 self.waiting = true;
-                self.notice = format!("Listing {} models…", r.label);
+                self.notice.clear();
                 self.hide();
             }
             Stage::Models => {

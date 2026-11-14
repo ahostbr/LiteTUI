@@ -1008,11 +1008,11 @@ fn backend_and_resume_arguments_preselect_rows_without_switching_or_opening() {
         catalog,
     )))
     .unwrap();
-    // Python's `/backend codex` switches at once; natively that is codex's model list, then a pick.
+    // Python's `/backend codex` switches at once (App.apply_backend_change); /model picks the model.
     let backend = &mut app.live.as_mut().unwrap().backend_controls;
     assert_eq!(
         backend.take_intent(),
-        Some(backend_controls::Intent::Models {
+        Some(backend_controls::Intent::Switch {
             revision: 7,
             name: "codex".into()
         })

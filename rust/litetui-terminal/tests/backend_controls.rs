@@ -44,9 +44,11 @@ fn models_view(context: Value) -> View {
     draw(&mut v, 80, 28);
     v.key(key(KeyCode::Down));
     v.key(key(KeyCode::Enter));
+    // /backend switches at once now (Python's App.apply_backend_change); the model stage below is
+    // reached only by a listing, which nothing in /backend asks for any more.
     assert_eq!(
         v.take_intent(),
-        Some(Intent::Models {
+        Some(Intent::Switch {
             revision: 7,
             name: "lmstudio".into()
         })
@@ -263,7 +265,7 @@ fn current_engine_says_already_on_and_mouse_click_selects_like_python() {
     );
     v.mouse(m(MouseEventKind::Down(MouseButton::Left)));
     v.mouse(m(MouseEventKind::Up(MouseButton::Left)));
-    assert!(matches!(v.take_intent(), Some(Intent::Models { name, .. }) if name == "lmstudio"));
+    assert!(matches!(v.take_intent(), Some(Intent::Switch { name, .. }) if name == "lmstudio"));
 }
 #[test]
 fn foreign_or_malformed_model_lists_are_refused() {
@@ -383,6 +385,74 @@ fn connected_receipt_waits_for_all_independent_readbacks_before_identity_change(
     assert_eq!(m.backend(), Some("lmstudio"));
     assert_eq!(m.model(), Some("new"));
     m.prompt("fresh-prompt").unwrap();
+}
+/// Python's /backend through the owned phases: the switch saves the backend with no model
+/// (`"model": null`), every readback carries the unchosen model (null in gui.state, "" in the
+/// catalog and the held-input list), and the frontend is told to open /model when Python would.
+#[test]
+fn backend_only_switch_verifies_every_readback_with_no_model_chosen() {
+    for (answered, offer) in [(false, false), (true, true)] {
+        let mut m = connected();
+        let read = m.request_backend(Intent::Read).unwrap();
+        let Step::Backend(Update::Catalog(c)) =
+            reply(&mut m, &read, data("custom", "old")).unwrap()
+        else {
+            panic!()
+        };
+        let before = m
+            .request_backend(Intent::Switch {
+                revision: c.revision,
+                name: "lmstudio".into(),
+            })
+            .unwrap();
+        assert_eq!(before["type"], "gui.conversations.read");
+        let set = write(reply(&mut m, &before, history()).unwrap());
+        assert_eq!(set["type"], "gui.backend.set");
+        assert!(
+            set["model"].is_null() && set.get("context").is_none(),
+            "{set}"
+        );
+        let event = json!({"type":"model_state","backend":"lmstudio","model":null});
+        assert!(matches!(m.accept(event.clone()).unwrap(), Step::Ignore));
+        m.accept(json!({"type":"gui.event","event_id":"12345678-1234-4123-8123-123456789abc","session_id":SESSION,"operation_id":set["id"],"execution_id":null,"hook_id":null,"source":"rpc","event":event})).unwrap();
+        let switched = json!({"version":1,"kind":"backend_transition","status":"switched","mutated":true,"close_required":false,"session_id":SESSION,"agent_id":AGENT,"snapshot":"a".repeat(64),"backend":"lmstudio","model":null,"error":null,"connected":answered,"offer_model_picker":offer});
+        let st = write(reply(&mut m, &set, switched).unwrap());
+        assert_eq!(st["type"], "gui.state");
+        let mut state = state("lmstudio", "");
+        state["model"]["model"] = Value::Null;
+        let h = write(reply(&mut m, &st, state).unwrap());
+        let list = write(reply(&mut m, &h, history()).unwrap());
+        let q = write(reply(&mut m, &list, data("lmstudio", "")).unwrap());
+        let mut held = queue();
+        held["model"] = json!("");
+        let Step::BackendChanged(changed) = reply(&mut m, &q, held).unwrap() else {
+            panic!()
+        };
+        assert_eq!(changed.snapshot.backend, "lmstudio");
+        assert_eq!(changed.snapshot.model, "");
+        assert_eq!(changed.offer_models, offer);
+        assert!(m.ready());
+        assert_eq!((m.backend(), m.model()), (Some("lmstudio"), Some("")));
+    }
+}
+/// A "switched" receipt answers only a backend-only request, and must say the model is unchosen.
+#[test]
+fn a_switched_receipt_that_names_a_model_closes() {
+    let mut m = connected();
+    let read = m.request_backend(Intent::Read).unwrap();
+    let Step::Backend(Update::Catalog(c)) = reply(&mut m, &read, data("custom", "old")).unwrap()
+    else {
+        panic!()
+    };
+    let before = m
+        .request_backend(Intent::Switch {
+            revision: c.revision,
+            name: "lmstudio".into(),
+        })
+        .unwrap();
+    let set = write(reply(&mut m, &before, history()).unwrap());
+    let forged = json!({"version":1,"kind":"backend_transition","status":"switched","mutated":true,"close_required":false,"session_id":SESSION,"agent_id":AGENT,"snapshot":"a".repeat(64),"backend":"lmstudio","model":"new","error":null,"connected":true,"offer_model_picker":false});
+    assert!(reply(&mut m, &set, forged).is_err());
 }
 #[test]
 fn unmutated_refusal_is_retryable_but_failure_or_forged_receipt_closes() {
@@ -611,22 +681,27 @@ fn oversized_source_history_refusal_keeps_original_backend_ready_without_mutatio
 }
 
 /// Ryan 2026-11-12: "the /backend screen can't be navigated with the arrow keys, and Enter
-/// doesn't confirm or close it". A refused model listing (server down, not logged in) left the
-/// picker open on an emptied list. Python closes its picker and says why in the chat.
+/// doesn't confirm or close it". A refused switch left the picker open on an emptied list.
+/// Python closes its picker and says why in the chat.
 #[test]
-fn a_refused_model_listing_closes_the_picker_with_the_reason() {
+fn a_refused_switch_closes_the_picker_with_the_reason() {
     let mut v = view();
     draw(&mut v, 100, 30);
     v.key(key(KeyCode::Down));
     v.key(key(KeyCode::Enter));
     assert!(
-        matches!(v.take_intent(), Some(Intent::Models { .. })),
-        "Enter lists the engine's models"
+        matches!(v.take_intent(), Some(Intent::Switch { .. })),
+        "Enter switches the backend"
     );
-    v.observe(Update::Rejected("No server at the LM Studio host".into()))
-        .unwrap();
+    v.observe(Update::Rejected(
+        "Backend selection is stale; refresh before switching".into(),
+    ))
+    .unwrap();
     assert!(!v.owns_input(), "the picker closes");
-    assert_eq!(v.notice, "No server at the LM Studio host");
+    assert_eq!(
+        v.notice,
+        "Backend selection is stale; refresh before switching"
+    );
     // /backend opens it again, navigable.
     v.open();
     assert_eq!(v.take_intent(), Some(Intent::Read));
@@ -634,5 +709,57 @@ fn a_refused_model_listing_closes_the_picker_with_the_reason() {
     draw(&mut v, 100, 30);
     v.key(key(KeyCode::Down));
     v.key(key(KeyCode::Enter));
-    assert!(matches!(v.take_intent(), Some(Intent::Models { .. })));
+    assert!(matches!(v.take_intent(), Some(Intent::Switch { .. })));
+}
+
+/// Ryan 2026-11-12 01:48: "/backend switches backend only /model displays models that backend
+/// provides". Enter on another engine switches it (no model list, no model question); the
+/// verified change, with no model chosen, closes the picker.
+#[test]
+fn enter_switches_the_backend_only_and_the_unchosen_model_change_closes_the_picker() {
+    let mut v = view();
+    let text = draw(&mut v, 100, 30);
+    assert!(
+        text.contains("Select the engine for this conversation"),
+        "{text}"
+    );
+    v.key(key(KeyCode::Down));
+    v.key(key(KeyCode::Enter));
+    assert_eq!(
+        v.take_intent(),
+        Some(Intent::Switch {
+            revision: 7,
+            name: "lmstudio".into()
+        })
+    );
+    assert!(v.waiting && v.notice.is_empty());
+    assert!(!draw(&mut v, 100, 30).contains("Select a model"));
+    assert!(
+        v.observe(Update::Changed {
+            backend: "codex".into(),
+            model: String::new()
+        })
+        .is_err(),
+        "a change to another backend is not this switch"
+    );
+    let mut v = view();
+    draw(&mut v, 100, 30);
+    v.key(key(KeyCode::Down));
+    v.key(key(KeyCode::Enter));
+    v.take_intent();
+    v.observe(Update::Changed {
+        backend: "lmstudio".into(),
+        model: String::new(),
+    })
+    .unwrap();
+    assert!(!v.owns_input() && !v.waiting);
+}
+
+#[test]
+fn a_catalog_with_no_model_chosen_is_the_state_after_backend() {
+    let c = Catalog::parse(&data("lmstudio", ""), 7, SESSION, AGENT).unwrap();
+    assert_eq!((c.selected.as_str(), c.model.as_str()), ("lmstudio", ""));
+    let mut d = data("lmstudio", "");
+    d["selected_model"] = json!(" padded");
+    assert!(Catalog::parse(&d, 7, SESSION, AGENT).is_err());
 }

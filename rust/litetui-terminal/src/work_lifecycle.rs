@@ -41,6 +41,14 @@ pub(crate) fn text(v: &Value, key: &str, max: usize) -> io::Result<String> {
         .map(str::to_owned)
         .ok_or_else(|| bad(&format!("Invalid Work {key}")))
 }
+/// A model id; "" when none is chosen (Python's /backend leaves it unchosen).
+pub(crate) fn model(v: &Value, key: &str) -> io::Result<String> {
+    v.get(key)
+        .and_then(Value::as_str)
+        .filter(|s| !s.contains('\0') && s.len() <= 1024)
+        .map(str::to_owned)
+        .ok_or_else(|| bad(&format!("Invalid Work {key}")))
+}
 pub(crate) fn optional(v: &Value, key: &str, max: usize) -> io::Result<Option<String>> {
     match v.get(key) {
         Some(Value::Null) => Ok(None),
@@ -145,7 +153,7 @@ impl Identity {
             session: uuid(v, "session_id")?,
             agent: uuid(v, "agent_id")?,
             backend: text(v, "backend", 64)?,
-            model: text(v, "model", 1024)?,
+            model: model(v, "model")?,
         })
     }
     pub fn value(&self) -> Value {

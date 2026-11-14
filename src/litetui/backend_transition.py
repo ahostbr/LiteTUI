@@ -198,6 +198,20 @@ async def transition(app, cmd):
         name = cmd.get("name")
         if name not in {row["name"] for row in catalog["entries"]}:
             raise ValueError("Backend selection is not visible in the source catalog")
+        if "model" in cmd and cmd["model"] is None:
+            if "context" in cmd:
+                raise ValueError("A backend-only switch chooses no context")
+            context = backend_catalog._context(app, catalog["session_id"])
+            if getattr(app, "_startup_history_path", None) is not None:
+                raise ValueError("Current history is still connecting")
+            backend_only = True
+        else:
+            backend_only = False
+    except Exception as exc:  # noqa: BLE001 - all preflight failures have a recoverable wire result
+        return _receipt(app, cmd, "refused", error=str(exc)[:2048])
+    if backend_only:
+        return await _switch_only(app, cmd, name, token, context)
+    try:
         model = backend_catalog._text(cmd.get("model"), 4096)
         if not model.strip() or any(ord(char) < 32 or ord(char) == 127 for char in model):
             raise ValueError("Select a nonempty explicit model without control characters")
@@ -377,6 +391,100 @@ async def transition(app, cmd):
         if isinstance(exc, asyncio.CancelledError):
             raise
         return _receipt(app, cmd, "failed", mutated=mutated, close_required=True, error=error[:2048])
+    finally:
+        app._backend_transition_inflight = False
+
+
+async def _switch_only(app, cmd, name, token, context):
+    """/backend as Python does it: switch and save the backend at once, the model unchosen.
+
+    Ryan 2026-11-12: "/backend switches backend only /model displays models that backend
+    provides". App.apply_backend_change is Python's own sequence (save, close the old native
+    session, the level last used there, "Backend → NAME; reconnecting…", connect). A backend that
+    does not answer leaves the seat on it, disconnected, as in Python. Local backends connect
+    only: nothing is started or loaded.
+    """
+    from litetui import background_input, gpu_gate
+    from litetui.gui_rpc import _tool_policy
+    from litetui.launch_options import LaunchOptions
+
+    if name == app.backend.name:
+        return _receipt(app, cmd, "refused", error=f"Already on {name}")
+    if name == "ninfer" and not gpu_gate.is_rtx_5090():
+        return _receipt(app, cmd, "refused", error=gpu_gate.why_not())
+    if reason := submission_refusal(app):
+        return _receipt(app, cmd, "refused", error=reason)
+    old_launch = getattr(app, "_launch_options", None)
+    launch = LaunchOptions(server_mode="connect" if name in _LOCAL else "auto",
+                           timeout=getattr(old_launch, "timeout", 600),
+                           max_tokens=getattr(old_launch, "max_tokens", None)
+                           if name not in {"codex", "claude"} else None,
+                           history_projection_version=getattr(old_launch, "history_projection_version", None),
+                           work_lifecycle_version=getattr(old_launch, "work_lifecycle_version", None),
+                           mcp_lifecycle_version=getattr(old_launch, "mcp_lifecycle_version", None),
+                           thinking_explicit=getattr(old_launch, "thinking_explicit", None))
+    conversation, history = app.conversation, copy.deepcopy(app.conversation)
+    policy = _tool_policy(app)
+    old_client = app.client
+    mutated = False
+    app._backend_transition_inflight = True
+    try:
+        work_proof = await background_input.before_identity_transition(app)
+        _quiet(app)
+        if (app.conversation is not conversation or app.conversation != history
+                or backend_catalog.catalog(app, {"session_id": context.session_id})["snapshot"] != token):
+            raise ValueError("Backend selection changed before publication")
+        for mapping in ("_invocation_saved_values", "_launch_overrides"):
+            values = getattr(app, mapping, {})
+            values.pop("backend", None)
+            values.pop("default_model", None)
+        app._cli_initial_backend = None
+        app._launch_backend, app._launch_options, app._launch_prepared = name, launch, False
+        mutated = True
+        # apply_backend_change refuses while a transition is in flight; this one is it.
+        app._backend_transition_inflight = False
+        connection = app.apply_backend_change(name)
+        app._backend_transition_inflight = True
+        if app.backend.name != name or app.settings.backend != name:
+            raise ValueError("Backend switch did not take")
+        if (context.session.authority.backend, context.session.authority.model) != (name, None):
+            raise ValueError("Published backend switch failed authority readback")
+        await connection.wait()
+        if app.backend.name != name or app.model_id:
+            raise ValueError("Backend switch identity changed while connecting")
+        if app.client is not old_client and not old_client.is_closed():
+            await old_client.close()
+        if app.conversation is not conversation or app.conversation != history or _tool_policy(app) != policy:
+            raise ValueError("History or tool policy changed during backend switch")
+        if getattr(app, "_pending_input", ()):
+            raise ValueError("Input arrived during backend switch")
+        if not hasattr(app, "_gui_effective_settings"):
+            app._gui_effective_settings = asdict(app.settings)
+        for key in ("backend", "default_model"):
+            app._gui_effective_settings[key] = getattr(app.settings, key)
+        receipt = _receipt(app, cmd, "switched", mutated=True)
+        receipt["model"] = None
+        receipt["connected"] = bool(getattr(app, "_gui_connection_success", False))
+        # App._offer_unchosen_model: Python opens /model once a session when the backend lists
+        # models and none is chosen (connect skips that for engine backends and under RPC; the
+        # native frontend opens it on this answer).
+        offer = bool(app.available_models and name not in llm_backend.ENGINE_BACKENDS
+                     and not getattr(app, "_unchosen_picker_offered", False))
+        if offer:
+            app._unchosen_picker_offered = True
+        receipt["offer_model_picker"] = offer
+        receipt.update(background_input.after_identity_transition(app, work_proof))
+        return receipt
+    except BaseException as exc:
+        if not mutated and not isinstance(exc, asyncio.CancelledError):
+            return _receipt(app, cmd, "refused", error=(str(exc) or type(exc).__name__)[:2048])
+        app._backend_transition_error = CLOSE_REQUIRED
+        app._owned_launch_error = CLOSE_REQUIRED
+        app._cli_launch_error = CLOSE_REQUIRED
+        if isinstance(exc, asyncio.CancelledError):
+            raise
+        return _receipt(app, cmd, "failed", mutated=True, close_required=True,
+                        error=(str(exc) or type(exc).__name__)[:2048])
     finally:
         app._backend_transition_inflight = False
 

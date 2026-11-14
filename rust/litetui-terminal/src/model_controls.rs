@@ -76,7 +76,11 @@ fn text<'a>(v: &'a Value, k: &str, limit: usize) -> io::Result<&'a str> {
 impl Choices {
     pub fn parse(kind: Kind, value: &Value, revision: u64, session: &str) -> io::Result<Self> {
         let backend = text(value, "backend", 64)?.to_owned();
-        let model = text(value, "model", 1024)?.to_owned();
+        // null after /backend: no model chosen yet, so no row is current.
+        let model = match value.get("model") {
+            Some(Value::Null) => String::new(),
+            _ => text(value, "model", 1024)?.to_owned(),
+        };
         let (current, rows, note) = match kind {
             Kind::Model => {
                 let values = value

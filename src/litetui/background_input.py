@@ -58,10 +58,32 @@ def canonical_id(value):
     return value
 
 
+def model_text(value):
+    """The model id, or "" when none is chosen (App.apply_backend_change leaves it unchosen)."""
+    if type(value) is not str or "\0" in value or len(value.encode()) > 1024:
+        raise ValueError("Invalid Work identity or bounded text")
+    return value
+
+
 def identity(app):
     return {"session_id": canonical_id(app.convo_id),
             "agent_id": canonical_id(app._agent_session.authority.agent_id),
-            "backend": text(app.backend.name, 64), "model": text(app.model_id, 1024)}
+            "backend": text(app.backend.name, 64), "model": model_text(app.model_id)}
+
+
+def validate_identity(app):
+    """app._validate_owned_identity, except that an unchosen model is an identity too.
+
+    Python's /backend (App.apply_backend_change) leaves the model unchosen until /model: the
+    identity is then the backend alone. Execution still refuses it in Python's words
+    (_validate_owned_execution: "No model chosen for ..."), so no turn starts.
+    """
+    authority = app._agent_session.authority
+    if authority.model is None:
+        if getattr(app.backend, "name", None) != authority.backend or app.model_id:
+            raise ValueError("Work identity disagrees with owned agent authority")
+        return
+    app._validate_owned_identity()
 
 
 def provider(app):
@@ -239,7 +261,7 @@ class Bridge:
 
     def check(self, *, allow_closing=False, allow_error=False):
         self._check_owner()
-        self.app._validate_owned_identity()
+        validate_identity(self.app)
         if self.error and not allow_error:
             raise ValueError(self.error)
         if self.pending_readbacks and not allow_error:
@@ -348,7 +370,10 @@ def _command(app, cmd, operation, extras=(), *, admission=True, expected_identit
         # a stale request projection must not prevent its final cleanup reply.
         app._validate_owned_authority()
     else:
-        (app._validate_owned_execution if admission else app._validate_owned_identity)()
+        if admission and app._agent_session.authority.model is not None:
+            app._validate_owned_execution()
+        else:
+            validate_identity(app)
 
 
 def capture(app, cmd):
@@ -1544,7 +1569,7 @@ def after_identity_transition(app, proof):
         raise ValueError("Work identity transition lacks exact old-epoch settlement")
     if app._agent_session is not value.owner[0] or identity(app)["agent_id"] != value.identity["agent_id"]:
         raise ValueError("Work identity transition changed its owned agent")
-    app._validate_owned_identity()
+    validate_identity(app)
     # Existing ledger partitions remain on disk under their owned conversation;
     # unresolved records preserve their original epoch when subsequently read.
     from litetui import (

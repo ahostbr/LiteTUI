@@ -271,6 +271,7 @@ mod tests {
             tasks: 0,
             presentation: Default::default(),
             title: None,
+            thinking: None,
         }
     }
     fn state_event(snapshot: management::Snapshot) -> Observation {

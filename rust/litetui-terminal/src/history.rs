@@ -47,7 +47,7 @@ pub fn shutdown_identity(command: &Value) -> io::Result<Value> {
         "target_session_id":storage_id(command,"session_id")?,
         "agent_id":storage_id(command,"agent_id")?,
         "backend":text(command,"backend",128,false)?,
-        "model":text(command,"model",1024,false)?}),
+        "model":text(command,"model",1024,true)?}),
     )
 }
 
@@ -176,7 +176,7 @@ impl Identity {
             || storage_id(value, "session_id")? != self.session
             || storage_id(value, "agent_id")? != self.agent
             || text(value, "backend", 128, false)? != self.backend
-            || text(value, "model", 1024, false)? != self.model
+            || text(value, "model", 1024, true)? != self.model
             || value["scope"] != self.scope.as_str()
             || nullable_hash(value, "catalog_snapshot")? != self.catalog
             || (self.scope == Scope::Current
@@ -812,7 +812,7 @@ impl OpenResult {
             || storage_id(value, "target_session_id")? != identity.session
             || storage_id(value, "agent_id")? != identity.agent
             || text(value, "backend", 128, false)? != identity.backend
-            || text(value, "model", 1024, false)? != identity.model
+            || text(value, "model", 1024, true)? != identity.model
             || nullable_hash(value, "catalog_snapshot")? != identity.catalog
             || hash(value, "history_snapshot")? != preview.token
             || value["action_id"] != json!(preview.open_action_id)

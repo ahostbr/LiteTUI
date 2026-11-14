@@ -186,7 +186,8 @@ impl State {
             ready.model = snapshot.model.clone();
             ready.conversation = Some(snapshot.session.clone());
             ready.context_ceiling = None;
-            ready.thinking = None;
+            // Python's footer keeps showing the level (app.thinking_level or "default").
+            ready.thinking = snapshot.thinking.clone();
         }
         self.presentation = (*snapshot.presentation).clone();
         if snapshot.title.is_some() {

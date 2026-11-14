@@ -4069,11 +4069,11 @@ mod tests {
         assert!(app.live.as_mut().unwrap().take_submission().is_none());
     }
     #[test]
-    fn backend_selector_follows_python_backend_then_model_then_context() {
+    fn backend_selector_switches_the_backend_only_as_python_does() {
         // Ryan 2026-11-11: "/backend switches backend only, /model displays models that backend
         // provides and always allows a context to be chosen for local models" — no typed model.
         use litetui_terminal::{
-            backend_controls::{Catalog, Intent, ModelList, Update},
+            backend_controls::{Catalog, Intent, Update},
             live::Observation,
         };
         let mut app = Demo::live("custom".into(), "old".into());
@@ -4140,86 +4140,32 @@ mod tests {
         render_footer(&mut app);
         plain(&mut app, &mut router, KeyCode::Down);
         plain(&mut app, &mut router, KeyCode::Enter);
+        // Ryan 2026-11-12: "/backend switches backend only /model displays models that backend
+        // provides". Enter switches now (App.apply_backend_change); /model picks the model.
         assert_eq!(
             app.live.as_mut().unwrap().backend_controls.take_intent(),
-            Some(Intent::Models {
+            Some(Intent::Switch {
                 revision: 1,
                 name: "lmstudio".into()
             })
         );
-        let listing = serde_json::json!({"version":1,"kind":"backend_models","session_id":id,"agent_id":id,"snapshot":"a".repeat(64),"name":"lmstudio","models":[{"key":"qwen-a","label":"  qwen-a  · lmstudio  · loaded","loaded":true},{"key":"qwen-b","label":"  qwen-b  · lmstudio","loaded":false}],"context":{"setting":"default_context_length","applies_on_engine_start":false,"suggestions":{"qwen-a":32768,"qwen-b":null},"remembered":{"qwen-a":32768,"qwen-b":null}}});
-        app.observe_live(Observation::Backend(Update::Models(
-            ModelList::parse(&listing, &catalog, "lmstudio").unwrap(),
-        )))
-        .unwrap();
         let shown = screen(&mut app);
-        assert!(shown.contains("Select a model"), "{shown}");
-        assert!(shown.contains("qwen-a  · lmstudio  · loaded"), "{shown}");
-        plain(&mut app, &mut router, KeyCode::Enter);
-        let shown = screen(&mut app);
-        assert!(
-            shown.contains("Context length for qwen-a (tokens)"),
-            "{shown}"
-        );
-        assert!(
-            shown.contains("Last used for this model: 32,768."),
-            "{shown}"
-        );
-        assert_eq!(
-            app.live.as_ref().unwrap().backend_controls.model_text(),
-            "32768"
-        );
-        // A bad number stays in the dialog with Python's words; nothing is sent.
-        for _ in 0..5 {
-            plain(&mut app, &mut router, KeyCode::Backspace);
-        }
-        plain(&mut app, &mut router, KeyCode::Char('9'));
-        plain(&mut app, &mut router, KeyCode::Enter);
-        assert!(
-            app.live
-                .as_mut()
-                .unwrap()
-                .backend_controls
-                .take_intent()
-                .is_none()
-        );
-        assert!(screen(&mut app).contains("is not a plausible"));
-        plain(&mut app, &mut router, KeyCode::Backspace);
-        paste(&mut app, "65,536");
-        plain(&mut app, &mut router, KeyCode::Enter);
-        assert_eq!(
-            app.live.as_mut().unwrap().backend_controls.take_intent(),
-            Some(Intent::Select {
-                revision: 1,
-                name: "lmstudio".into(),
-                model: "qwen-a".into(),
-                context: Some(65536),
-            })
-        );
+        assert!(!shown.contains("Select a model"), "{shown}");
         assert_eq!(app.composer.text(), "unsent main draft");
         assert!(app.live.as_ref().unwrap().rows.is_empty());
+        // A refusal closes the picker and says why, as Python does in its chat.
         app.observe_live(Observation::Backend(Update::Rejected(
-            "Requested model is unavailable or not loaded".into(),
+            "Backend selection is stale; refresh before switching".into(),
         )))
         .unwrap();
-        // Esc in the context dialog is "Keep current": the pick still happens, with no size.
-        assert!(screen(&mut app).contains("Requested model is unavailable"));
-        plain(&mut app, &mut router, KeyCode::Enter);
-        screen(&mut app);
-        plain(&mut app, &mut router, KeyCode::Esc);
-        assert_eq!(
-            app.live.as_mut().unwrap().backend_controls.take_intent(),
-            Some(Intent::Select {
-                revision: 1,
-                name: "lmstudio".into(),
-                model: "qwen-a".into(),
-                context: None,
-            })
+        assert!(
+            app.live
+                .as_ref()
+                .unwrap()
+                .backend_controls
+                .notice
+                .contains("stale")
         );
-        app.observe_live(Observation::Backend(Update::Rejected("stale".into())))
-            .unwrap();
-        plain(&mut app, &mut router, KeyCode::Esc);
-        plain(&mut app, &mut router, KeyCode::Esc);
         let mut small = Terminal::new(ratatui::backend::TestBackend::new(35, 9)).unwrap();
         small.draw(|f| ui::draw(f, &mut app)).unwrap();
         assert!(!app.has_live_backend());

@@ -626,3 +626,68 @@ def test_level_after_switch_keeps_the_current_level_without_a_memory():
     assert level_after_switch(settings, "codex", "low") == "high"
     assert level_after_switch(settings, "lmstudio", "low") == "low"
     assert level_after_switch(settings, "lmstudio", None) == "default"
+
+
+# Ryan 2026-11-12 01:48: "/backend switches backend only /model displays models that backend
+# provides". A request with "model": null is Python's /backend: App.apply_backend_change switches
+# and saves the backend at once and leaves the model unchosen, even when the backend does not
+# answer (the seat stays on it, disconnected). Nothing is started or loaded.
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("answers", [True, False])
+async def test_backend_only_switch_saves_the_backend_and_leaves_the_model_unchosen(switch_app, monkeypatch, answers):
+    app = switch_app
+    lines = []
+    monkeypatch.setattr(app, "system_message", lines.append)
+    monkeypatch.setattr(app, "update_header", lambda: None)
+
+    async def listing(_backend):
+        if not answers:
+            raise llm_backend.BackendError("Controlled: no server")
+        return [llm_backend.ModelRow("new-model", None, "fixture", True)]
+
+    monkeypatch.setattr(llm_backend.LMStudioBackend, "list_models", listing)
+    before_history = copy.deepcopy(app.conversation)
+    result = await gui_rpc.async_dispatch(app, command(app, model=None))
+    assert result["status"] == "switched", result
+    assert result["mutated"] and not result["close_required"] and result["error"] is None
+    assert (result["backend"], result["model"], result["connected"]) == ("lmstudio", None, answers)
+    # App._offer_unchosen_model: /model opens once a session when the backend lists models.
+    assert result["offer_model_picker"] is answers
+    assert (app._agent_session.authority.backend, app._agent_session.authority.model) == ("lmstudio", None)
+    assert app.backend.name == "lmstudio" and app.settings.backend == "lmstudio" and app.model_id == ""
+    assert app.conversation == before_history
+    assert app._launch_options.server_mode == "connect" and not app._launch_options.load_model
+    assert "Backend → lmstudio; reconnecting…" in lines
+    assert not getattr(app, "_backend_transition_error", None)
+    assert not app._backend_transition_inflight
+
+
+@pytest.mark.asyncio
+async def test_backend_only_switch_to_the_current_backend_says_already_on_it(switch_app):
+    app = switch_app
+    before = disk(app)
+    result = await gui_rpc.async_dispatch(app, command(app, name="custom", model=None))
+    assert result["status"] == "refused" and result["error"] == "Already on custom", result
+    assert not result["mutated"] and disk(app) == before
+
+
+@pytest.mark.asyncio
+async def test_backend_only_switch_takes_no_context(switch_app):
+    app = switch_app
+    before = disk(app)
+    result = await gui_rpc.async_dispatch(app, command(app, model=None, context=65536))
+    assert result["status"] == "refused" and not result["mutated"], result
+    assert disk(app) == before and app.backend.name == "custom"
+
+
+@pytest.mark.asyncio
+async def test_backend_only_switch_offers_the_model_picker_once_a_session(switch_app, monkeypatch):
+    app = switch_app
+    monkeypatch.setattr(app, "system_message", lambda *_: None)
+    monkeypatch.setattr(app, "update_header", lambda: None)
+    first = await gui_rpc.async_dispatch(app, command(app, model=None))
+    assert first["status"] == "switched" and first["offer_model_picker"] is True, first
+    second = await gui_rpc.async_dispatch(app, command(app, name="custom", model=None))
+    assert second["status"] == "switched" and second["offer_model_picker"] is False, second

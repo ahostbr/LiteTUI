@@ -613,6 +613,7 @@ fn live_state(session: &str) -> litetui_terminal::management::Snapshot {
         tasks: 0,
         presentation: Default::default(),
         title: None,
+        thinking: None,
     }
 }
 #[test]

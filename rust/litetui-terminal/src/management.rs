@@ -93,6 +93,22 @@ fn text<'a>(value: &'a Value, key: &str, max: usize) -> io::Result<&'a str> {
         .filter(|s| !s.is_empty() && s.len() <= max)
         .ok_or_else(|| fail(&format!("Invalid management {key}")))
 }
+/// Python's model id, "" when none is chosen (after /backend; gui.state sends null for it).
+fn model_text(value: &Value, key: &str) -> io::Result<String> {
+    match value.get(key) {
+        Some(Value::Null) => Ok(String::new()),
+        Some(Value::String(s)) if s.len() <= 1024 => Ok(s.clone()),
+        _ => Err(fail(&format!("Invalid management {key}"))),
+    }
+}
+/// Whether a wire model field names `model`; "" (unchosen) matches null or "".
+fn is_model(value: &Value, model: &str) -> bool {
+    if model.is_empty() {
+        value.is_null() || value == ""
+    } else {
+        value == model
+    }
+}
 fn boolean(value: &Value, key: &str) -> io::Result<bool> {
     value
         .get(key)
@@ -161,6 +177,8 @@ pub struct Snapshot {
     pub presentation: Box<crate::presentation::Presentation>,
     /// Python's title bar text (model.title), so it follows a backend or model change.
     pub title: Option<String>,
+    /// Python's footer level (`think:` + app.thinking_level or "default"), when the source sends it.
+    pub thinking: Option<String>,
 }
 impl Snapshot {
     fn parse(value: &Value) -> io::Result<Self> {
@@ -184,7 +202,7 @@ impl Snapshot {
         }
         Ok(Self {
             session: text(value, "session_id", 128)?.to_owned(),
-            model: text(&value["model"], "model", 1024)?.to_owned(),
+            model: model_text(&value["model"], "model")?,
             backend: text(&value["model"], "backend", 64)?.to_owned(),
             profile: text(value, "tool_profile", 32)?.to_owned(),
             mode: mode.to_owned(),
@@ -204,6 +222,13 @@ impl Snapshot {
                 Value::Null => None,
                 Value::String(title) if title.len() <= 4096 => Some(title.clone()),
                 _ => return Err(fail("Invalid runtime title")),
+            },
+            thinking: match &value["model"]["thinking"] {
+                Value::Null => None,
+                Value::String(level) if !level.is_empty() && level.len() <= 64 => {
+                    Some(level.clone())
+                }
+                _ => return Err(fail("Invalid runtime thinking level")),
             },
         })
     }
@@ -385,6 +410,7 @@ struct BackendPending {
     state: Option<Snapshot>,
     policy: Option<Value>,
     observed_model: bool,
+    offer_models: bool,
 }
 struct CommandPending {
     id: Option<CommandId>,
@@ -934,7 +960,7 @@ impl Management {
         self.expected = Some((
             text(ready, "conversation_id", 128)?.to_owned(),
             text(ready, "backend", 64)?.to_owned(),
-            text(ready, "model", 1024)?.to_owned(),
+            model_text(ready, "model")?,
             text(ready, "tool_profile", 32)?.to_owned(),
         ));
         if self
@@ -1740,7 +1766,7 @@ impl Management {
             if event["type"] == "model_state"
                 && (frame["session_id"] != review.target
                     || event["backend"] != *backend
-                    || event["model"] != *model)
+                    || !is_model(&event["model"], model))
             {
                 return Err(fail("Conversation action changed provider"));
             }
@@ -1760,7 +1786,7 @@ impl Management {
                 return Err(fail("Unexpected event during owned engine lifecycle"));
             }
             if event["type"] == "model_state"
-                && (event["backend"] != *backend || event["model"] != *model)
+                && (event["backend"] != *backend || !is_model(&event["model"], model))
             {
                 return Err(fail("Engine event changed desired authority"));
             }
@@ -1781,7 +1807,7 @@ impl Management {
                 return Err(fail("Unexpected event during owned backend transition"));
             }
             if kind == Some("model_state") {
-                if event["backend"] != *target || event["model"] != *target_model {
+                if event["backend"] != *target || !is_model(&event["model"], target_model) {
                     return Err(fail("Backend transition event changed the explicit target"));
                 }
                 pending.observed_model = true;
@@ -1827,7 +1853,9 @@ impl Management {
         crate::stream::required_uuid4(frame, "event_id")
             .map_err(|_| fail("GUI event lacks a canonical emission identity"))?;
         let kind = event["type"].as_str().expect("wire validated");
-        if kind == "model_state" && (event["backend"] != *backend || event["model"] != *model) {
+        if kind == "model_state"
+            && (event["backend"] != *backend || !is_model(&event["model"], model))
+        {
             let owned_change = event["backend"] == *backend
                 && (self.model_lifecycle_event(frame, event)
                     || self.control.as_ref().is_some_and(|pending| {
@@ -3107,6 +3135,25 @@ impl Management {
                     )?,
                 )
             }
+            // Backend only: the same verified phases, with no model (Python's model_id "").
+            Intent::Switch { revision, name } => {
+                let catalog = self
+                    .backend_catalog
+                    .as_ref()
+                    .filter(|c| c.revision == revision && c.entries.iter().any(|r| r.name == name))
+                    .ok_or_else(|| fail("Backend selection changed; refresh and select again"))?;
+                self.backend_context = None;
+                (
+                    1,
+                    Some((name, String::new())),
+                    Some(catalog.clone()),
+                    self.history_command(
+                        session,
+                        &self.expected.as_ref().unwrap().1,
+                        &self.expected.as_ref().unwrap().2,
+                    )?,
+                )
+            }
         };
         let id = self
             .wire
@@ -3123,6 +3170,7 @@ impl Management {
             state: None,
             policy: None,
             observed_model: false,
+            offer_models: false,
         });
         self.menu = None;
         self.browser_page = None;
@@ -3221,6 +3269,21 @@ impl Management {
                             && pending.observed_model =>
                     {
                         self.work_transition_receipt(result, true)?;
+                    }
+                    // App.apply_backend_change: switched and saved, the model unchosen, connected
+                    // or not (a backend that does not answer leaves the seat on it, disconnected).
+                    Some("switched")
+                        if model.is_empty()
+                            && result["mutated"] == true
+                            && result["close_required"] == false
+                            && result["backend"] == name
+                            && result["model"].is_null()
+                            && result["error"].is_null()
+                            && result["connected"].is_boolean()
+                            && result["offer_model_picker"].is_boolean() =>
+                    {
+                        self.work_transition_receipt(result, true)?;
+                        pending.offer_models = result["offer_model_picker"] == true;
                     }
                     _ => {
                         // Say why in Python's words: the session closes, so this is the last line.
@@ -3323,6 +3386,7 @@ impl Management {
                     history: pending.history.take().expect("history"),
                     queue,
                     policy: pending.policy.take().expect("policy"),
+                    offer_models: pending.offer_models,
                 })));
             }
             _ => return Err(fail("Invalid backend transition phase")),
@@ -3335,6 +3399,11 @@ impl Management {
         let mut command = match pending.stage {
             2 => {
                 pending.mutation = Some(id.clone());
+                let model = if model.is_empty() {
+                    Value::Null
+                } else {
+                    json!(model)
+                };
                 let mut set = json!({"type":SET,"version":1,"session_id":session,"agent_id":agent,"snapshot":pending.catalog.as_ref().expect("catalog").snapshot,"name":name,"model":model});
                 if let Some(tokens) = self.backend_context.take() {
                     set["context"] = json!(tokens);

@@ -229,7 +229,7 @@ impl Snapshot {
             token,
             session: text(v, "session_id", 128, false)?,
             backend: text(v, "backend", 64, false)?,
-            model: text(v, "model", 1024, false)?,
+            model: text(v, "model", 1024, true)?,
             entries,
             message: None,
             recovered: None,

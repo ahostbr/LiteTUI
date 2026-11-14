@@ -209,6 +209,11 @@ impl Demo {
             }
             _ => None,
         };
+        // App._offer_unchosen_model: after /backend, Python opens /model when the backend lists models.
+        let offer_models = matches!(
+            &observation,
+            crate::live::Observation::BackendChanged(changed) if changed.offer_models
+        );
         let chat = self.live.as_mut().expect("live view");
         chat.observe(observation)?;
         chat.work.chat_pause.foreground(chat.busy);
@@ -407,6 +412,9 @@ impl Demo {
                 Action::Quit => self.command_quit = true,
                 Action::Skills | Action::SkillPrepare => {}
             }
+        }
+        if offer_models {
+            self.open_models(crate::model_controls::Kind::Model);
         }
         Ok(())
     }
