@@ -302,6 +302,32 @@ def _refuse(message: str, log=None) -> None:
     raise BackendError(message)
 
 
+#: Flags LiteTUI sends by default (T1306-A). Strata answers a flag it does not have with "unknown
+#: option" and does not start: engine-0.2.10's strata-dsv41.exe (strata-ista-das-coder.json) has no
+#: --conversation-cache-mib at all (grep -a, 2026-11-13).
+_DEFAULTED_FLAGS = ("--conversation-cache-mib",)
+
+
+def _drop_flags_the_engine_lacks(run_cfg: dict) -> None:
+    """Leave out a defaulted flag the config's engine binary does not carry (its help strings name every
+    flag it parses). Unreadable counts as lacking, as the server's own --tail-role-token check does
+    (serve/server.py effort_end_args)."""
+    args = run_cfg["args"]
+    wanted = [flag for flag in _DEFAULTED_FLAGS if flag in args]
+    if not wanted:
+        return
+    exe = str(run_cfg.get("exe") or "")
+    try:
+        with open(exe, "rb") as fh:
+            binary = fh.read()
+    except OSError:
+        binary = b""
+    for flag in wanted:
+        if flag.encode() not in binary:
+            strata_options._drop_flag(args, flag)
+            _log_event(f"left out {flag}: {exe or 'the engine'} does not have it")
+
+
 def launch_plan(settings) -> tuple[list[str], Path, dict, str]:
     """(argv, cwd, the config that will run, host) for the next start, or BackendError
     naming what is missing. Pure apart from reading the install; spawns nothing."""
@@ -326,6 +352,8 @@ def launch_plan(settings) -> tuple[list[str], Path, dict, str]:
                    or _arg_value([str(a) for a in cfg["args"]], "--rope-scaling") in ("linear", "yarn"))
     run_cfg = with_context(cfg, getattr(settings, "strata_max_context", None), rope_scaled=rope_scaled)
     run_cfg = strata_options.apply(run_cfg, settings)
+    if run_cfg is not cfg:
+        _drop_flags_the_engine_lacks(run_cfg)
     run_path = path
     if run_cfg is not cfg:
         # A context or option LiteTUI chose: written beside the log, never over the install's own file.
