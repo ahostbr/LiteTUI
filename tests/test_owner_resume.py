@@ -8,6 +8,7 @@ from litetui import owner_mode
 from litetui.agent_launch_context import ordinary
 from litetui.claude_turn import ledger_for, system_prompt_for
 from litetui.settings import Settings
+from _legacy_slot import compose_at_legacy_slot
 
 
 @pytest.fixture
@@ -281,8 +282,10 @@ async def test_legacy_host_slot_preserves_same_store_with_arbitrary_file_example
 
     _index_example(tmp_path, monkeypatch, owner)
     memory = folder(tmp_path, "widgets") if owner else None
-    first = build(memory, backend)
+    first = compose_at_legacy_slot(build(memory, backend))
     _write_heading_example(first, memory, True)
+    first.conversation.clear()
+    first._load_system_prompt()
     path = save(first, backend)
     # Construct an old-format fixture. Product code must never backfill it.
     records = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()]
@@ -326,7 +329,7 @@ def test_legacy_known_slot_still_refuses_real_store_mismatch(tmp_path, build, na
 
     original = None if change == "ordinary-to-owner" else folder(tmp_path, "widgets")
     target = None if change == "owner-to-ordinary" else folder(tmp_path, "gadgets")
-    app = build(original)
+    app = compose_at_legacy_slot(build(original))
     prompt = app._system_prompt_text()
     app._owner_memory_dir = target
     with pytest.raises(owner_mode.OwnerModeError, match="saved conversation and launch use different memory stores"):
@@ -336,7 +339,7 @@ def test_legacy_known_slot_still_refuses_real_store_mismatch(tmp_path, build, na
 def test_legacy_native_requires_same_launch_prefix(build):
     from litetui.store_identity import require_store_match
 
-    app = build(None)
+    app = compose_at_legacy_slot(build(None))
     app._cli_system_prompt = "Launch role and method"
     # Historical native launch prefix + host registry fold, before T0338
     # introduced an authoritative role header in _system_prompt_text itself.

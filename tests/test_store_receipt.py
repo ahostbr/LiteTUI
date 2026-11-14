@@ -4,6 +4,7 @@ import json
 import pytest
 from test_owner_resume import _index_example, folder, save
 from test_owner_resume import build as _build
+from _legacy_slot import compose_at_legacy_slot
 
 from litetui import appsvc
 from litetui.claude_turn import ledger_for, system_prompt_for
@@ -60,9 +61,12 @@ def remove_receipts(path):
 @pytest.mark.parametrize("backend", ["lmstudio", "claude"])
 async def test_legacy_notice_once_without_changing_prompt(tmp_path, build, owner, backend):
     memory = folder(tmp_path, "widgets") if owner else None
-    first = build(memory, backend)
+    first = compose_at_legacy_slot(build(memory, backend))
+    first.conversation.clear()
+    first._load_system_prompt()
     path = save(first, backend)
     saved = first.conversation[0]["content"]
+    frozen = saved[len(first.conversation[0]["litetui_prompt_base"]):]
     remove_receipts(path)
     resumed = build(memory, backend)
     said = []
@@ -79,7 +83,8 @@ async def test_legacy_notice_once_without_changing_prompt(tmp_path, build, owner
         assert all(str(root / name) in notice for name in files)
         for _ in range(2):
             messages = resumed._request_messages()
-            assert messages[0]["content"] == saved
+            # T1306-D: the host-owned v2 prefix is recomposed in the current section order; the frozen suffix is kept.
+            assert messages[0]["content"] == resumed._compose_system_text() + frozen
             assert sum(message.get("content") == notice for message in messages) == 1
         if backend == "claude":
             ledger = ledger_for(resumed)
@@ -195,11 +200,14 @@ def test_receipt_replay_resets_only_with_system_content(tmp_path):
 @pytest.mark.asyncio
 async def test_legacy_index_collision_without_loaded_memory_preserves_bytes(tmp_path, monkeypatch, build):
     _index_example(tmp_path, monkeypatch, False)
-    first = build(None)
+    first = compose_at_legacy_slot(build(None))
+    first.conversation.clear()
+    first._load_system_prompt()
     first._materialise_convo()
     first._inject_index_once()
     first._append({"role": "user", "content": "saved without a loaded store"})
     saved = first.conversation[0]["content"]
+    frozen = saved[len(first.conversation[0]["litetui_prompt_base"]):]
     assert appsvc.STORE_HEADER in saved and "HOME-BODY" not in saved
     path = first.convo_path
     first.store.release()
@@ -212,7 +220,7 @@ async def test_legacy_index_collision_without_loaded_memory_preserves_bytes(tmp_
         await pilot.pause()
         assert resumed._resume(path, startup=True)
         outgoing = resumed._request_messages()
-        assert outgoing[0]["content"] == saved
+        assert outgoing[0]["content"] == resumed._compose_system_text() + frozen  # T1306-D: recomposed, suffix kept
         notices = [text for text in said if text.startswith("Legacy store snapshot")]
         assert len(notices) == 1
         assert sum(message.get("content") == notices[0] for message in outgoing) == 1

@@ -63,14 +63,12 @@ def _reference(a) -> str:
             raise ValueError(f"reference found unresolved placeholders: {unresolved}")
         # T0338 split preserves the former BASE bytes/order before every other section.
         base = base.strip() + "\n\n" + paths.prompt_file("ordinary-instructions.md").read_text(encoding="utf-8").strip()
-    # T558: plan mode rides slot 5, between BASE and MEMORY. Built here
+    # T558: plan mode rides slot 5, after BASE. Built here
     # INDEPENDENTLY of the app, like every other arm of this reference.
     if getattr(a, "_plan_mode", False) and paths.PLAN_PROMPT_FILE.exists():
         base = (
             base + "\n" + paths.PLAN_PROMPT_FILE.read_text(encoding="utf-8").strip() + "\n"
         ).strip()
-    if a.convo_dir is not None:
-        base = (base + m.memory_prompt(a.convo_id, a._agent_session.memory_root)).strip()
     if a.tools_enabled:
         # Was m.TOOLS_PROMPT, a constant in app.py, until the prompt text moved
         # to prompts/tools.md (2026-08-22). The reference still builds the fold
@@ -93,6 +91,10 @@ def _reference(a) -> str:
         # "offered with no instructions" state this file's fold exists to
         # notice. The skills index stays off with the tools, as before.
         base = (base + m.TOOLS_DISABLED_PROMPT).strip()
+    # T1306-D (prefix audit P7): the store block names THIS conversation, so it moved from slot 10 to last, after the
+    # tools text, the deferred list and the skills index that every conversation on one server shares.
+    if a.convo_dir is not None:
+        base = (base + m.memory_prompt(a.convo_id, a._agent_session.memory_root)).strip()
     # T1124's required final recap is appended after every composed section.
     # Independent literal: sharing the app's value would hide a missing suffix.
     return "# BUILDER ROLE "+ "\u2014 Builder Mode\n\n" + base + (

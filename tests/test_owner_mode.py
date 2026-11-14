@@ -6,6 +6,7 @@ import shutil
 import sys
 
 import pytest
+from _legacy_slot import compose_at_legacy_slot
 
 from litetui import app as app_mod
 from litetui import appsvc, cli, owner_mode, settings
@@ -382,7 +383,7 @@ def test_help_is_unchanged_without_owner_mode(make_app, monkeypatch):
 @pytest.mark.asyncio
 async def test_same_owner_resume_keeps_the_stanza_at_the_owner_folder(make_app, owner_dir):
     import json
-    app = make_app()
+    app = compose_at_legacy_slot(make_app())  # a prompt with no recorded provenance predates T1306-D
     home = app._agent_session.memory_root
     saved = refresh_store_address(app._system_prompt_text(), "old-id", owner_dir, owner=True) + "\nuser prose\n"
     path = app.convo_dir / "convo.jsonl"

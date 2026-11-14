@@ -9,6 +9,8 @@ import pytest
 from litetui import app as app_mod
 from litetui import cli, harness, image_viewer, owner_mode
 from litetui import prompt_overrides as prompts
+from litetui.plugins import PROMPT_ORDER
+from litetui.store_identity import LEGACY_MEMORY_ORDER
 
 RECAP = "\n\nEnd each FINAL answer with <recap>two short lines: what you did and result, about 40 tokens</recap>. Do not put this tag in interim tool calls."
 
@@ -56,7 +58,8 @@ def test_existing_owner_conversation_explicit_launch_revision(tmp_path, monkeypa
             # contained the new custom body and has no per-home source manifest.
             legacy = default.read_text(encoding="utf-8") + "\n\n" + method.read_text(encoding="utf-8")
             app.conversation[:] = [{"role": "system", "content": legacy + frozen},
-                                   {"role": "system", "content": app.plugins.compose_prompt() + RECAP},
+                                   {"role": "system", "content": app.plugins.compose_prompt(  # MEMORY at its pre-T1306-D slot
+                                       reorder={PROMPT_ORDER["MEMORY"]: LEGACY_MEMORY_ORDER}) + RECAP},
                                    {"role": "user", "content": "OLD USER HISTORY EXACT"}]
             app._snapshot("synthetic pre-feature owner transcript")
             saved.update(home=home, cid=app.convo_id, path=app.convo_path, frozen=frozen)

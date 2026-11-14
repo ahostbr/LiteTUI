@@ -2,6 +2,7 @@
 
 import asyncio
 import base64
+import contextlib
 import hashlib
 import io
 import json
@@ -83,6 +84,7 @@ from litetui.textfmt import (  # noqa: F401  (re-exported for existing callers)
 # ⚠️ It buys a shorter app.py and nothing else: same API surface, same method
 # count on LiteTUI, same plugin reach-through.
 from litetui.now_card import NowCard
+from litetui.tool_advert import ToolAdvert
 from litetui.widgets import (  # noqa: F401  (re-exported for existing callers)
     AnswerBody,
     AssistantMessage,
@@ -1900,6 +1902,8 @@ class LiteTUI(App):
         # failure would be swallowed by per-plugin isolation, turning a
         # broken checkout into a silent half-boot.
         self.plugins = plugins_mod.PluginRegistry()
+        # T1306-D: the tool advertisement, frozen per conversation on a prefix-cache backend (litetui.tool_advert).
+        self._tool_advert = ToolAdvert()
         # The host's own prompt sections, registered BEFORE plugins so slot
         # collisions land on the intruder, not the floor. Renders read self.*
         # LIVE — a /reconnect or convo switch changes the next composition.
@@ -3173,7 +3177,8 @@ class LiteTUI(App):
 
     def _remember_chat_tools(self) -> list[dict]:
         """The tools a chat request advertises, kept so a compaction can send the SAME array (prefix cache)."""
-        self._last_chat_tools = self._all_tools()
+        advert = getattr(self, "_tool_advert", None)
+        self._last_chat_tools = advert.tools(self) if advert is not None else self._all_tools()
         return self._last_chat_tools
 
     def _all_tools(self) -> list[dict]:
@@ -3862,6 +3867,8 @@ class LiteTUI(App):
         from litetui.store_identity import capture
         self._prompt_store_identity = capture(self)
         self._store_injected = False
+        if getattr(self, "_tool_advert", None) is not None:
+            self._tool_advert.reset(self.plugins)  # a rebuilt message 0 takes a fresh tool snapshot (T1306-D)
         return self._compose_system_text()
 
     def _compose_system_text(self, *, replace=None) -> str:
@@ -4017,7 +4024,10 @@ class LiteTUI(App):
             if message.get("litetui_prompt_version") == 2:
                 # Prefix is host-owned; its frozen index/lore/store suffix is opaque.
                 # Recomposition does not reset or reread the store receipt.
-                messages[index] = {**message, "content": self._compose_system_text() + content[len(original):]}
+                advert = getattr(self, "_tool_advert", None)
+                with advert.capturing() if advert is not None else contextlib.nullcontext():
+                    prefix = self._compose_system_text()
+                messages[index] = {**message, "content": prefix + content[len(original):]}
                 continue
             start = message.get("litetui_prompt_ordinary_start")
             if start is None and old_ordinary:
