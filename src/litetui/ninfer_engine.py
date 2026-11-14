@@ -602,28 +602,137 @@ def registered_host() -> str | None:
     return entry["baseUrl"] if entry else None
 
 
-def stop_registered(entry: dict) -> bool:
-    """FAIL CLOSED (option A). A registered engine we hold no live handle for is
-    identified only by {owner, kind, pid}. Under PID reuse a pid-only `taskkill /PID`
-    can terminate an UNRELATED process, and without a retained handle or a verified
-    process identity (e.g. creation time) we cannot confirm the pid is still OUR engine.
+def process_identity(pid) -> dict | None:
+    """What makes a recorded pid safe to adopt later, read from the live process at spawn:
+    its creation time and its executable path. None when it cannot be read (the record is
+    then written without them, and a later session refuses to adopt it, saying so)."""
+    try:
+        import psutil
+        proc = psutil.Process(pid)
+        with proc.oneshot():
+            return {"created": round(proc.create_time(), 3), "exe": proc.exe()}
+    except Exception:  # noqa: BLE001 - gone, denied, no psutil: all mean "no identity"
+        return None
 
-    So this does NOT kill and does NOT drop the record: it returns False (nothing
-    stopped), preserving the entry for a future identity-verified stop. The old
-    behaviour — taskkill by unverified pid, then unregister and return True even when
-    taskkill raised — could kill a reused pid and permanently erase the only ownership
-    record while the real process survived. Validated so a malformed/foreign entry is a
-    clean no-op either way.
-    """
+
+@dataclass
+class AdoptOutcome:
+    """What `stop_adopted` did. `freed` = no engine of ours is left at the record (stopped
+    now, or already gone and its record cleared). `reason` names what blocked a stop."""
+    freed: bool
+    message: str = ""
+    reason: str = ""
+
+
+#: Two reads of one process's creation time agree to the millisecond; a reused pid is a
+#: process created later. The tolerance covers rounding of the recorded value only.
+_CREATED_TOLERANCE_S = 0.01
+#: How long a tree-kill gets to show that the engine and its children are gone.
+_ADOPT_EXIT_WAIT_S = 10.0
+
+
+def _same_exe(a: str, b: str) -> bool:
+    return os.path.normcase(os.path.normpath(a)) == os.path.normcase(os.path.normpath(b))
+
+
+def _listening_ports(proc) -> set[int] | None:
+    import psutil
+    try:
+        conns = proc.net_connections(kind="tcp") if hasattr(proc, "net_connections") else proc.connections(kind="tcp")
+    except (psutil.AccessDenied, psutil.NoSuchProcess):
+        return None
+    return {c.laddr.port for c in conns if c.status == psutil.CONN_LISTEN and c.laddr}
+
+
+def stop_adopted(entry: dict, *, healthy) -> AdoptOutcome:
+    """Stop an engine a PREVIOUS LiteTUI session started (another process, or this one
+    before /agent-new): Ryan 2026-11-14, *"its refusting to stop ninfer after slash
+    agent-new"*.
+
+    A pid alone may be REUSED, so the record written at spawn also carries the process's
+    creation time and exe path (`process_identity`), and its baseUrl names the port. Every
+    one is checked against the live process: same pid, same creation time, same exe, and
+    that process listens on the recorded port. All match: the pid is our engine, and it gets
+    the tree-kill an owned engine without a job gets (taskkill /T), then the exit is proved
+    and only then the record is removed. Any one differs: nothing is killed, the record is
+    kept, and the reason names which.
+
+    A recorded pid that no longer exists, with nothing answering at the port, is an engine
+    that already exited: its record (that pid, that URL) is cleared."""
     pid = entry.get("pid")
     if entry.get("owner") != "litetui" or entry.get("kind") != "ninfer":
-        return False
+        return AdoptOutcome(False, reason="the record was not written by LiteTUI")
     if not isinstance(pid, int) or isinstance(pid, bool) or pid <= 0:
-        return False
-    return False  # verified identity is a separate slice; until then, no pid-only kill
+        return AdoptOutcome(False, reason="the record has no valid pid")
+    base = str(entry.get("baseUrl") or "").rstrip("/")
+    missing = [k for k in ("created", "exe") if not entry.get(k)]
+    if missing:
+        return AdoptOutcome(False, reason=f"the record has no {' or '.join('creation time' if k == 'created' else 'exe path' for k in missing)} "
+                                          "(it was written by an older LiteTUI)")
+    from urllib.parse import urlsplit
+    try:
+        port = urlsplit(base).port
+    except ValueError:
+        port = None
+    if not port:
+        return AdoptOutcome(False, reason=f"the record's address {base!r} has no port")
+    try:
+        import psutil
+    except ImportError:
+        return AdoptOutcome(False, reason="psutil is not available to read the process")
+    try:
+        proc = psutil.Process(pid)
+        with proc.oneshot():
+            created, exe = proc.create_time(), proc.exe()
+    except psutil.NoSuchProcess:
+        if healthy(base):
+            return AdoptOutcome(False, reason=f"pid {pid} no longer exists, but something answers at {base}")
+        _remove_entry(base, pid)
+        _log_event(f"cleared the record of an engine that already exited ({base}, pid {pid})")
+        return AdoptOutcome(True, f"the engine LiteTUI started at {base} (pid {pid}) has already exited; its record is cleared.")
+    except psutil.AccessDenied:
+        return AdoptOutcome(False, reason=f"access to pid {pid} was denied")
+    if abs(created - float(entry["created"])) > _CREATED_TOLERANCE_S:
+        return AdoptOutcome(False, reason=f"pid {pid}'s creation time differs from the record "
+                                          f"({time.strftime('%F %T', time.localtime(created))} now, "
+                                          f"{time.strftime('%F %T', time.localtime(float(entry['created'])))} recorded): the pid was reused")
+    if not _same_exe(exe, str(entry["exe"])):
+        return AdoptOutcome(False, reason=f"pid {pid} runs {exe}, not the recorded {entry['exe']}: the pid was reused")
+    ports = _listening_ports(proc)
+    if ports is None:
+        return AdoptOutcome(False, reason=f"pid {pid}'s listening ports could not be read")
+    if port not in ports:
+        return AdoptOutcome(False, reason=f"pid {pid} is not listening on port {port}")
+    try:
+        children = proc.children(recursive=True)
+    except psutil.Error:
+        children = []
+    _log_event(f"adopting the engine at {base} (pid {pid}: creation time, exe and port match) to stop it")
+    try:
+        ttyguard.run(["taskkill", "/T", "/F", "/PID", str(pid)], timeout=15)
+    except (OSError, subprocess.TimeoutExpired):
+        pass
+    _gone, alive = psutil.wait_procs([proc, *children], timeout=_ADOPT_EXIT_WAIT_S)
+    if proc in alive:
+        return AdoptOutcome(False, reason=f"pid {pid} matched and was sent a tree kill, but its exit was NOT confirmed (it may still be running)")
+    if not _remove_entry(base, pid):
+        return AdoptOutcome(True, f"stopped the engine LiteTUI started at {base} (pid {pid}), but its record could not be removed.")
+    left = [p.pid for p in alive]
+    if left:
+        return AdoptOutcome(True, f"stopped the engine LiteTUI started at {base} (pid {pid}); "
+                                  f"{len(left)} child process(es) are still running: {', '.join(map(str, left))}.")
+    return AdoptOutcome(True, f"stopped the engine LiteTUI started at {base} (pid {pid}) — it and its "
+                              f"{len(children)} child process(es) are confirmed gone.")
 
 
-def register_host(base_url: str, *, pid: int | None = None) -> bool:
+def stop_registered(entry: dict) -> bool:
+    """True only when `stop_adopted` stopped the engine. A record without a verified identity
+    (an older LiteTUI's, or a foreign or malformed one) is never killed and never dropped: a
+    pid-only `taskkill` could hit a reused pid (option A, 2026-09-21)."""
+    return stop_adopted(entry, healthy=lambda _h: True).freed
+
+
+def register_host(base_url: str, *, pid: int | None = None, identity: dict | None = None) -> bool:
     """Add `{baseUrl, kind: ninfer, owner: "litetui", pid}` to LiteSuite's config; False when
     the file is not writable. `owner`/`pid` are the vocabulary NeonRack and NeonRelay agreed for
     the Model Hub (T819/T820, 2026-09-17): the hub labels an answering engine LiteSuite | LiteTUI
@@ -639,6 +748,8 @@ def register_host(base_url: str, *, pid: int | None = None) -> bool:
             entry: dict = {"baseUrl": base_url, "kind": "ninfer", "owner": "litetui"}
             if pid is not None:
                 entry["pid"] = pid
+                if identity:                           # what lets a later session adopt it (stop_adopted)
+                    entry.update({k: identity[k] for k in ("created", "exe") if identity.get(k)})
             entries.append(entry)
             body["extraEndpoints"] = entries
             path.parent.mkdir(parents=True, exist_ok=True)
@@ -892,6 +1003,9 @@ def start(settings, *, healthy, spawn=ttyguard.popen, notice=None, progress=None
     # spawn simply never used it.
     job = jobkill.create()
     pid = getattr(proc, "pid", None)
+    # Read now, while the process is certainly ours: a later session adopts it only if the
+    # pid still has this creation time and exe (stop_adopted).
+    identity = process_identity(pid) if isinstance(pid, int) else None
     if job is not None and isinstance(pid, int):
         if not jobkill.assign(job, pid):
             # Not fatal: `stop` still has the taskkill path. But say so, or a
@@ -906,7 +1020,7 @@ def start(settings, *, healthy, spawn=ttyguard.popen, notice=None, progress=None
                                      interval=0.5, failure_markers=NINFER_FAILURE_MARKERS,
                                      cancel=cancel, progress=progress)
     if outcome == "ready":
-        register_host(host, pid=pid)
+        register_host(host, pid=pid, identity=identity)
         atexit.register(stop, owned)
         return owned
     if outcome == "cancelled":
@@ -1139,8 +1253,13 @@ def unregister_owned(owned) -> bool:
     bookkeeping. Never a broad URL-only delete."""
     if not getattr(owned, "registered", True):
         return True                          # never registered -> nothing to remove
-    pid = getattr(owned.proc, "pid", None)
-    host = str(owned.host).rstrip("/")
+    return _remove_entry(owned.host, getattr(owned.proc, "pid", None))
+
+
+def _remove_entry(host, pid) -> bool:
+    """Drop the ninfer entry whose owner is litetui and whose baseUrl AND pid both match, under
+    the registry lock. The one removal `unregister_owned` and `stop_adopted` share."""
+    host = str(host).rstrip("/")
     path = _config_path()
     try:
         with _registry_lock():

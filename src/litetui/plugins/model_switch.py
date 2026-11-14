@@ -610,11 +610,16 @@ def _restart(app, backend) -> None:
                 # Nothing of ours to stop: ask the stop what is there (it stops nothing it
                 # does not own) and start only when nothing is.
                 said = await agent_preparation.await_preparation(target.stop_engine)
-                if said != NOTHING_RUNNING:
+                if getattr(target, "last_stop_freed", False):
+                    # An engine an earlier LiteTUI session started, verified and stopped
+                    # (or found already gone): it was ours, so the restart goes on.
+                    app.system_message(said)
+                elif said != NOTHING_RUNNING:
                     app.system_message("/engine restart restarts only an engine this LiteTUI started, "
                                        f"so nothing was stopped or started: {said}")
                     return
-                app.system_message(f"No {label} engine is running — starting one.")
+                else:
+                    app.system_message(f"No {label} engine is running — starting one.")
             else:
                 app.system_message(await _stop_and_say(app, target))
                 if target._owned is not None:

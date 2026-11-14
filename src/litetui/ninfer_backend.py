@@ -407,6 +407,9 @@ class NInferBackend(OwnedEngineLifecycle):
     # -- owning the engine (the user a-35456da0: "LiteTUI may start it") ----------
 
     def stop_engine(self) -> str:
+        #: True after a stop that left no engine of ours at the registered record (an adopted
+        #: engine stopped, or found already gone): /engine restart may then start one.
+        self.last_stop_freed = False
         if self._owned is None:
             # 🔴 NO HANDLE IS NOT THE SAME AS NOT OURS. `self._owned` answers
             # "did THIS PROCESS start it" and is lost on every restart; the
@@ -424,16 +427,20 @@ class NInferBackend(OwnedEngineLifecycle):
                           and isinstance(pid, int) and not isinstance(pid, bool) and pid > 0)
             if is_litetui:
                 host = entry.get("baseUrl")
-                if ninfer_engine.stop_registered(entry):
-                    # Currently unreachable (stop_registered fails closed); a future
-                    # identity-verified path may confirm and act.
-                    return f"stopped the LiteTUI-registered NInfer engine at {host} (pid {pid})."
-                # FAIL CLOSED: we hold no live handle for this pid and cannot verify the
-                # process's identity — a pid-only kill could hit a REUSED pid. Do not kill,
-                # keep the record, and do NOT mislabel our own registered engine as external.
+                # An engine an EARLIER LiteTUI session started (another process, or this window
+                # before /agent-new): adopted only when its pid, creation time, exe and port all
+                # match the record (ninfer_engine.stop_adopted). Ryan 2026-11-14: "its refusting
+                # to stop ninfer after slash agent-new".
+                outcome = ninfer_engine.stop_adopted(entry, healthy=self._health)
+                if outcome.freed:
+                    self.last_stop_freed = True
+                    return outcome.message
+                # FAIL CLOSED: the identity did not verify — a pid-only kill could hit a REUSED
+                # pid. Do not kill, keep the record, say which check failed, and do NOT
+                # mislabel our own registered engine as external.
                 return (f"a LiteTUI-registered NInfer engine is recorded at {host} (pid {pid}), "
-                        f"but this session holds no handle for it and cannot safely verify that "
-                        f"pid — a pid-only kill could hit a reused process. Stop it via its "
+                        f"but LiteTUI cannot safely verify that pid: {outcome.reason}. A pid-only "
+                        f"kill could hit a reused process, so nothing was stopped. Stop it via its "
                         f"originating owner (LiteSuite's Model Hub) or your process manager; the "
                         f"record is preserved.")
             reg = entry.get("baseUrl") if entry else discover_ninfer_host()
