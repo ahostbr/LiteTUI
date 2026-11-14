@@ -202,10 +202,8 @@ async def test_unexpected_apply_exception_is_fatal(switch_app, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_read_only_review_and_backend_switch_never_migrate_legacy_defaults(switch_app):
+async def test_read_only_review_never_migrates_legacy_defaults(switch_app):
     app = switch_app
-    from litetui import backend_catalog, backend_transition
-    catalog = backend_catalog.catalog(app, {"session_id": app.convo_id})
     path = app._agent_session.store.data_root / "settings.json"
     raw = json.loads(path.read_text(encoding="utf-8"))
     raw["codex_subagent_model"] = "legacy-model"
@@ -213,13 +211,27 @@ async def test_read_only_review_and_backend_switch_never_migrate_legacy_defaults
     before = disk(app)
     with pytest.raises(ValueError, match="Legacy defaults"):
         native_settings.snapshot(app, {"version": 1, "session_id": app.convo_id})
-    catalog = backend_catalog.catalog(app, {"session_id": app.convo_id})
-    result = await backend_transition.transition(app, {"version": 1, "session_id": app.convo_id,
-             "agent_id": catalog["agent_id"], "snapshot": catalog["snapshot"], "name": "lmstudio", "model": "new-model"})
-    assert result["status"] == "refused" and "Legacy defaults" in result["error"], result
     assert disk(app) == before
     # Existing ordinary service callers retain migration behavior.
     settings_runtime.service_for(app).snapshot(app.convo_id)
+    assert "codex_subagent_model" not in json.loads(path.read_text(encoding="utf-8"))
+
+
+@pytest.mark.asyncio
+async def test_backend_switch_migrates_legacy_defaults_like_python(switch_app):
+    # Python's /backend is App.apply_backend_change, whose settings_runtime.persist_or_raise is an
+    # ordinary service caller: it migrates legacy defaults. The Rust app runs on its own copied
+    # data folder (Ryan: "copy all settings keep them separate marked as rust"); Sentinel
+    # 6080ae32: parity, not the refusal only the deleted model-naming switch made.
+    from test_rust_backend_transition import command
+
+    app = switch_app
+    path = app._agent_session.store.data_root / "settings.json"
+    raw = json.loads(path.read_text(encoding="utf-8"))
+    raw["codex_subagent_model"] = "legacy-model"
+    path.write_text(json.dumps(raw), encoding="utf-8")
+    result = await gui_rpc.async_dispatch(app, command(app))
+    assert result["status"] == "switched", result
     assert "codex_subagent_model" not in json.loads(path.read_text(encoding="utf-8"))
 
 

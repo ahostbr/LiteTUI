@@ -59,6 +59,9 @@ async def switch_app(make_app, monkeypatch):
     app._gui_rpc_enabled = True
     app._system = lambda *_: None
     app._update_header = lambda: None
+    # apply_backend_change (the switch) writes Python's lines to the chat this unmounted app lacks.
+    app.system_message = lambda *_: None
+    app.update_header = lambda: None
     app._fetch_ctx_window = lambda: None
     app._refresh_ctx_label = lambda: None
     app._rpc_emit_model_state = lambda: None
@@ -118,8 +121,6 @@ def disk(app):
 @pytest.mark.asyncio
 async def test_switch_preserves_owned_history_policy_and_closes_the_old_client(switch_app, monkeypatch):
     app = switch_app
-    monkeypatch.setattr(app, "system_message", lambda *_: None)
-    monkeypatch.setattr(app, "update_header", lambda: None)
     request = command(app)
     before_history = copy.deepcopy(app.conversation)
     before_policy = gui_rpc._tool_policy(app)
@@ -260,8 +261,6 @@ async def test_fatal_latch_blocks_gui_and_non_gui_escape_routes(switch_app, monk
 @pytest.mark.asyncio
 async def test_cancelled_connection_after_the_switch_latches_closed(switch_app, monkeypatch):
     app = switch_app
-    monkeypatch.setattr(app, "system_message", lambda *_: None)
-    monkeypatch.setattr(app, "update_header", lambda: None)
     request = command(app)
 
     async def cancelled(_backend):
@@ -381,8 +380,6 @@ async def test_backend_switch_preserves_negotiated_history_protocol(switch_app, 
                 "backend": app.backend.name, "model": app.model_id,
                 "scope": "current", "catalog_snapshot": None}
 
-    app.system_message = lambda *_: None
-    app.update_header = lambda: None
     before = gui_rpc.dispatch(app, history_command("gui.history.native_snapshot")) if version else None
     result = await gui_rpc.async_dispatch(app, command(app))
     assert result["status"] == "switched", result
@@ -442,8 +439,6 @@ async def test_switch_restores_the_level_last_used_with_that_backend(switch_app)
     # LM Studio last ran at default: the switch brings it back instead of carrying "low"
     # (which this LM Studio model does not take, so carrying it would be refused).
     app.settings.thinking_by_backend["lmstudio"] = "default"
-    app.system_message = lambda *_: None
-    app.update_header = lambda: None
     result = await gui_rpc.async_dispatch(app, command(app))
     assert result["status"] == "switched", result
     assert app._agent_session.authority.thinking_level == "default"

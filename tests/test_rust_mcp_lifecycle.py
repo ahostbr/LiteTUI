@@ -745,7 +745,7 @@ async def test_backend_transition_preserves_mcp_launch_capability(switch_app):
         work_lifecycle_version=1, mcp_lifecycle_version=1
     )
     result = await gui_rpc.async_dispatch(app, backend_command(app))
-    assert result["status"] == "connected", result
+    assert result["status"] == "switched", result
     assert (
         app._launch_options.work_lifecycle_version
         == app._launch_options.mcp_lifecycle_version

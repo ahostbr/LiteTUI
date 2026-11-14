@@ -88,8 +88,8 @@ async def test_sync_model_entry_cannot_bypass_awaited_epoch_retirement(armed, mo
 async def test_backend_switch_retires_old_epoch_after_quiet_validation(armed):
     old = work.bridge(armed)
     result = await gui_rpc.async_dispatch(armed, backend_command(armed))
-    assert result["status"] == "connected", result
-    assert armed.backend.name == "lmstudio" and armed.model_id == "new-model"
+    assert result["status"] == "switched", result
+    assert armed.backend.name == "lmstudio" and armed.model_id == ""
     recapture(armed, old, result)
 
 
