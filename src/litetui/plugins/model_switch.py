@@ -1086,8 +1086,7 @@ class ModelConfigBody(Widget):
                         auto_mmproj, mmproj_found = self._sibling_projector()
                         for key, label, kind, extra in _LOAD_FIELDS:
                             editable = on_llama or key == "ctx"
-                            flag = llm_backend.FLAG_FOR.get(key, "")
-                            missing = bool(flags) and flag not in flags
+                            missing = not llm_backend.load_key_expressible(key, flags)
                             note = (
                                 f"n/a in installed build ({llm_backend.configured_build(app.settings)})"
                                 if missing else

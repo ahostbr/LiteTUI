@@ -166,6 +166,28 @@ BOOL_FLAGS: dict[str, str] = {
 
 FLAG_FOR: dict[str, str] = {**VALUE_FLAGS, **BOOL_FLAGS}
 
+#: 🔴 b12078 REMOVED --mmap AND --mlock for ONE `--load-mode MODE` (T1306-F;
+#: b12078 19e8a86fe common/arg.cpp:2642-2658: auto|none|mmap|mlock|mmap+mlock|dio).
+#: The two Load-tab booleans stay the vocabulary; on a build whose census has
+#: load-mode but not the old pair they are written as one load-mode line. A key
+#: left unset takes b9360's default so the model loads as it did there:
+#: common/common.h:548 `use_mmap = true`, :550 `use_mlock = false` (6b4e4bd58).
+_LOAD_MODE_DEFAULTS = {"mmap": True, "mlock": False}
+_LOAD_MODES = {(True, True): "mmap+mlock", (True, False): "mmap",
+               (False, True): "mlock", (False, False): "none"}
+
+
+def _speaks_load_mode(flags: frozenset[str]) -> bool:
+    return "load-mode" in flags and not {"mmap", "mlock"} <= flags
+
+
+def load_key_expressible(key: str, flags: frozenset[str]) -> bool:
+    """Can the installed build carry this Load-tab key? An empty census proves
+    nothing, so nothing is called n/a on it."""
+    if not flags or FLAG_FOR.get(key, "") in flags:
+        return True
+    return key in _LOAD_MODE_DEFAULTS and "load-mode" in flags
+
 
 @dataclass(frozen=True)
 class TerminalShutdown:
@@ -796,6 +818,11 @@ def render_preset_ini(rows: list[ModelRow], settings, *, load_settings: dict | N
             auto, _found = sibling_mmproj(row.path)
             if auto:
                 cfg = {**cfg, "mmproj": auto}
+        load_mode = None
+        if _speaks_load_mode(flags) and any(cfg.get(k) is not None for k in _LOAD_MODE_DEFAULTS):
+            chosen = tuple(bool(d if cfg.get(k) is None else cfg[k]) for k, d in _LOAD_MODE_DEFAULTS.items())
+            load_mode = _LOAD_MODES[chosen]
+            cfg = {k: v for k, v in cfg.items() if k not in _LOAD_MODE_DEFAULTS}
         for k in sorted(cfg):
             v = cfg[k]
             if v is None:
@@ -804,6 +831,8 @@ def render_preset_ini(rows: list[ModelRow], settings, *, load_settings: dict | N
             if ini_key is None or (flags and ini_key not in flags):
                 raise IniUnexpressible(k, model=row.key)
             lines.append(_ini_line(k, v))
+        if load_mode is not None:
+            lines.append(f"load-mode = {load_mode}")
         lines.append("")
     return "\n".join(lines)
 
