@@ -198,7 +198,9 @@ def main() -> None:
             try:
                 store = AgentStore(data_root())
                 directory = store.locate_conversation(args.convo)
-                args.agent = store.find_agent(name=directory.parent.parent.name).name
+                from litetui.agent_ownership import settled_catalog
+                args.agent = settled_catalog(
+                    store, lambda: store.find_agent(name=directory.parent.parent.name)).name
             except (StoreError, OSError) as exc:
                 parser.error(
                     f'Owned conversation lookup refused: {exc}; pass --agent <Name> only for an existing owned child. '

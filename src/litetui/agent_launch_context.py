@@ -51,9 +51,11 @@ def ordinary(root: Path, settings, *, spawned_identity=None, notice=print,
     raises instead of opening, and creating, a differently named one.
     """
     from uuid import uuid4
-    from litetui.agent_ownership import OwnershipError
+    from litetui.agent_ownership import OwnershipError, settled_catalog
     store = AgentStore(root)
-    agents = store.list_agents()  # corrupt/inactive metadata remains fail-closed
+    # Corrupt/inactive metadata remains fail-closed; a home another process is still
+    # creating is waited for (T1307).
+    agents = settled_catalog(store)
     explicit = spawned_identity is not None
     identity, name = (spawned_identity[:2] if explicit else
                       (None, (settings.seat_name or '').strip() or 'LiteTUI'))
