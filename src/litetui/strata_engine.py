@@ -36,7 +36,7 @@ import time
 import urllib.request
 from pathlib import Path
 
-from . import jobkill, ninfer_engine, strata_options, ttyguard
+from . import jobkill, ninfer_engine, prefix_persist, strata_options, ttyguard
 from .llm_backend import BackendError, _arg_value
 from .ninfer_engine import EngineStartFailed, OwnedEngine
 
@@ -337,6 +337,8 @@ def launch_plan(settings) -> tuple[list[str], Path, dict, str]:
     if not port.isdigit():
         raise BackendError(f"strata_host {host} names no port — use http://127.0.0.1:<port>.")
     argv = [str(python), str(server), "--engine", "strata", "--config", str(run_path), "--port", port]
+    # T1306-E: the folder the server saves and restores the conversation in (prefix_persist).
+    argv += prefix_persist.strata_launch_args(settings)
     return argv, root, run_cfg, host
 
 

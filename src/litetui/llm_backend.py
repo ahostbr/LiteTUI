@@ -827,6 +827,8 @@ class _Owned:
     proc: object            # ttyguard.popen handle for OUR router (None = attached)
     log_path: Path
     log_file: object
+    #: The preset ini the router was started with: the launch identity of a saved slot (T1306-E).
+    ini: Path | None = None
 
 
 #: Which of llama-server's two control planes is answering. See the module
@@ -978,6 +980,9 @@ class LlamaCppBackend(_VramGate):
         self._owned: _Owned | None = None
         self._rows: list[ModelRow] = []
         self._shape: str | None = None      # probed per connect, see _probe_shape
+        from . import prefix_persist
+        #: Prompt cache across router restarts (T1306-E); off unless slot_persist_llama.
+        self.slot_persistence = prefix_persist.SlotPersistence(prefix_persist.LlamaSlots(self))
 
     # -- identity ---------------------------------------------------------
 
@@ -1185,6 +1190,8 @@ class LlamaCppBackend(_VramGate):
         return self._spawn(preset=preset) if preset is not None else self._spawn()
 
     def _spawn(self, *, preset: Path | None = None) -> str:
+        from . import prefix_persist
+
         binary = llama_executable(self._settings)
         if not binary.exists():
             raise BackendError(
@@ -1215,6 +1222,8 @@ class LlamaCppBackend(_VramGate):
                 "--port", port,
                 "--models-max", str(self._settings.llama_models_max),
                 "--no-models-autoload",
+                *prefix_persist.llama_launch_args(
+                    self._settings, lambda: configured_flags(self._settings)),
             ],
             stdin=subprocess.DEVNULL,
             stdout=log_file,
@@ -1224,7 +1233,8 @@ class LlamaCppBackend(_VramGate):
         deadline = time.monotonic() + ROUTER_START_TIMEOUT_S
         while time.monotonic() < deadline:
             if _healthy(self._host):
-                self._owned = _Owned(proc, log_path, log_file)
+                self._owned = _Owned(proc, log_path, log_file, ini=Path(ini))
+                self.slot_persistence.note_start()
                 self._attached_host = None
                 self._attached_owner = None
                 self._shape = _SHAPE_ROUTER
@@ -1350,6 +1360,10 @@ class LlamaCppBackend(_VramGate):
             pass
         if self._owned is owned:                    # clear ONLY if still the same object
             self._owned = None
+        try:
+            self.slot_persistence.note_stopped()     # nothing writes now: drop partial saves
+        except Exception:  # noqa: BLE001 - bookkeeping never fails a stop
+            pass
         return TerminalShutdown(owned=True, attempted=attempted, main_exited=True,
                                 tree="unknown", pid=pid, retained=False, error=error)
 

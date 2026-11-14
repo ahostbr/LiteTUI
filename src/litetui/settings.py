@@ -363,6 +363,23 @@ class Settings:
     #: lmstudio SDK sync-API timeout. Its default (60s) is shorter than a
     #: large model's load; a timeout mid-load reads as a failure that isn't.
     lms_load_timeout_s: int = 600
+    #: T1306-E (prefix-cache audit P8): save the conversation's prompt cache when an engine LiteTUI
+    #: started stops cleanly, and put it back before that conversation's next request after the
+    #: next start (prefix_persist.py). Strata ON: its engine refuses a session from another model
+    #: or engine configuration itself. llama.cpp OFF: b9360 refuses /slots with an mmproj loaded,
+    #: saves no hybrid checkpoints (a Qwen3.5/3.8 restore re-reads anyway) and checks no identity.
+    slot_persist_strata: bool = True
+    slot_persist_llama: bool = False
+    #: Blank = <data root>/.slot-saves (one folder per engine inside). LiteTUI's alone: a file
+    #: in it that is not a verified save is deleted.
+    slot_persist_dir: str = ""
+    #: Disk cap for all saves of one engine; the oldest go first. One 74k-token hybrid state
+    #: with its checkpoints is ~9.5 GiB (REPORT.md section 2), so 32 holds about three.
+    slot_persist_cap_gib: int = 32
+    #: At a stop the engine usually holds the card summary, not the conversation; the last
+    #: main request is then re-sent (max_tokens 1) to put it back, for at most this long
+    #: (Prefix 431d0c21: 10 s, the user is quitting). Past it nothing is saved.
+    slot_persist_replay_s: int = 10
 
     # ── Generation ───────────────────────────────────────────────────────────
     #: Response budget WITH tools enabled. The agent loop needs headroom for

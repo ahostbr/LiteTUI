@@ -26,7 +26,7 @@ import time
 import urllib.error
 import urllib.request
 
-from . import strata_engine
+from . import prefix_persist, strata_engine
 from .engine_lifecycle import OwnedEngineLifecycle
 from .llm_backend import BackendError, ModelRow
 
@@ -54,6 +54,9 @@ class StrataBackend(OwnedEngineLifecycle):
     def __init__(self, settings) -> None:
         self._settings = settings
         self._init_lifecycle()
+        #: Prompt cache across restarts (T1306-E). Active only for Strata's own engine and only
+        #: while LiteTUI owns it (`StrataSlots.why_off`); Xolotl inherits it switched off.
+        self.slot_persistence = prefix_persist.SlotPersistence(prefix_persist.StrataSlots(self))
 
     # -- where it is ---------------------------------------------------------
 
