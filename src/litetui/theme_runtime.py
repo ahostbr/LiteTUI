@@ -41,25 +41,30 @@ def apply_selection(app, *, previous_definition=None):
 def apply_saved_result(app, requested, result):
     """Apply only successfully saved theme fields, without another persistence call.
 
-    Preserve partial state on failure: runtime readback describes what exists,
-    never a guessed rollback. Theme-specific integration may reuse these helpers.
+    On failure the running settings go back to their previous theme fields, as
+    settings_runtime.apply_saved_result does for every other field (Python 1:1,
+    Sentinel 56da1095): the saved file keeps the new value, the app keeps what it
+    shows. Registry facts are read back, never guessed. Theme-specific integration
+    may reuse these helpers.
     """
     saved = {key for outcome in result.persistence if outcome.saved for key in outcome.fields}
     if not saved or saved - set(FIELDS):
         raise ValueError("Theme runtime application requires only saved theme fields")
     name = requested.theme_name
-    desired = app.available_themes.get(name)
-    for key, tokens in requested.custom_themes.items():
-        try:
-            candidate = themes.theme_from_tokens(key, tokens)
-            if candidate.name == name:
-                desired = candidate
-        except (ValueError, TypeError, AttributeError):
-            continue
-    expected_definition = definition_digest(desired) if desired is not None else None
+    expected_definition = None
+    before = {key: deepcopy(getattr(app.settings, key)) for key in FIELDS if key in saved}
     outcome = {"status": "applied", "registered": False, "selected": False,
                "refresh_requested": False, "error": None}
     try:
+        desired = app.available_themes.get(name)
+        for key, tokens in requested.custom_themes.items():
+            try:
+                candidate = themes.theme_from_tokens(key, tokens)
+                if candidate.name == name:
+                    desired = candidate
+            except (ValueError, TypeError, AttributeError):
+                continue
+        expected_definition = definition_digest(desired) if desired is not None else None
         previous = definition_digest(app.current_theme)
         # Set the cached choice before the reactive property: watch_theme then
         # sees an already-saved value and never issues a second device write.
@@ -78,6 +83,8 @@ def apply_saved_result(app, requested, result):
     except Exception as error:  # noqa: BLE001 - preserve partial runtime facts
         outcome["status"] = "failed"
         outcome["error"] = str(error).encode("utf-8", "replace")[:4096].decode("utf-8", "ignore")
+        for key, value in before.items():
+            setattr(app.settings, key, value)
         try:
             registered = app.available_themes.get(name)
             outcome["registered"] = registered is not None and definition_digest(registered) == expected_definition

@@ -82,6 +82,7 @@ def test_real_settings_callback_persists_backend_only_in_conversation(_service, 
     from litetui.app import LiteTUI
     from litetui.settings_service import SettingsService
     from copy import deepcopy
+    from textual.theme import BUILTIN_THEMES
     svc = _service()
     snap = svc.create_conversation(A)
     class App:
@@ -92,6 +93,11 @@ def test_real_settings_callback_persists_backend_only_in_conversation(_service, 
         _agent_session = svc.agent_session
         backend = SimpleNamespace(name='lmstudio')
         theme = settings.theme_name
+        # Textual's own theme registry: _on_settings_saved reads the current definition
+        # before it re-applies the selection (598b1b21).
+        available_themes = dict(BUILTIN_THEMES)
+        current_theme = BUILTIN_THEMES['textual-dark']
+        def get_theme(self, name): return self.available_themes.get(name)
         def _refresh_prompt_controls(self): pass
         def _next_follow_generation(self): pass
         def _scroll_down(self): pass
@@ -192,6 +198,35 @@ def test_runtime_failure_preserves_saved_evidence_and_old_effective(_service, tm
     result = apply_saved_result(app, svc.snapshot(A).saved, result)
     assert result.fully_saved
     assert result.runtime[0].status == 'failed'
+    assert app.settings.theme_name == 'textual-dark'
+    assert svc.snapshot(A).saved.theme_name == 'monokai'
+
+
+def test_theme_apply_failure_after_selection_rolls_running_settings_back(_service, tmp_path):
+    """The theme runtime sets the running choice before selecting it; when selecting then
+    fails, the running settings go back to the old theme, as for every other field
+    (settings_runtime.apply_saved_result; Python 1:1, Sentinel 56da1095)."""
+    from textual.theme import BUILTIN_THEMES
+    from litetui.settings_runtime import apply_saved_result
+    from litetui.settings_service import SettingChange
+    svc = _service()
+    snap = svc.create_conversation(A)
+    class App:
+        settings = snap.effective
+        convo_dir = svc.conversation_root / A
+        available_themes = dict(BUILTIN_THEMES)
+        current_theme = BUILTIN_THEMES['textual-dark']
+        def get_theme(self, name): return self.available_themes.get(name)
+        @property
+        def theme(self): return 'textual-dark'
+        @theme.setter
+        def theme(self, value): raise RuntimeError('injected runtime failure')
+    app = App()
+    result = svc.save_patch(A, [SettingChange('theme_name', 'monokai', 'device')], snap.revisions)
+    result = apply_saved_result(app, svc.snapshot(A).saved, result)
+    assert result.fully_saved
+    assert app._theme_runtime_result['status'] == 'failed'
+    assert 'injected runtime failure' in app._theme_runtime_result['error']
     assert app.settings.theme_name == 'textual-dark'
     assert svc.snapshot(A).saved.theme_name == 'monokai'
 
