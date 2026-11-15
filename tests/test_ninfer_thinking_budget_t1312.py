@@ -73,7 +73,7 @@ def test_no_budget_means_no_key_and_no_extra_room(build, budget):
 
 
 @pytest.mark.parametrize("build", [_chat, _compact])
-@pytest.mark.parametrize("backend", ["lmstudio", "strata", "llama", "codex", ""])
+@pytest.mark.parametrize("backend", ["lmstudio", "llama", "codex", ""])  # strata/xolotl: tests/test_strata_thinking_budget_t1318.py
 def test_another_backend_gets_neither_the_key_nor_the_room(build, backend):
     """Control for the NInfer arm: the same setting, the same call, a different backend."""
     kwargs = build(backend_name=backend, thinking_budget=2048)
@@ -128,7 +128,7 @@ def test_every_turn_engine_call_in_app_passes_the_setting():
     """The wiring: a call site that forgets the argument silently sends no budget."""
     text = (SRC / "app.py").read_text(encoding="utf-8")
     calls = len(re.findall(r"TurnEngine\.(?:chat_request|compact_request)\(", text))
-    wired = len(re.findall(r"thinking_budget=self\.settings\.ninfer_thinking_budget", text))
+    wired = len(re.findall(r"thinking_budget=TurnEngine\.thinking_budget_for\(self\.settings, self\.backend\.name\)", text))
     pinned = len(re.findall(r"pinned_effort=\(getattr\(self, \"_last_chat_effort\"", text))
     assert calls == 3 and wired == calls
     assert pinned == 2, "both compaction requests must pass the chat effort they are pinned to"
@@ -180,12 +180,11 @@ async def test_a_servers_named_room_still_caps_a_compaction_raised_by_the_budget
     from test_compact_reactive_retry import (RECORDED_PROMPT_TOKENS, WINDOW, _conversation_like_the_recording,
                                              _replay_app, _run)
     app, notes, log, served = _replay_app(monkeypatch, _conversation_like_the_recording(), "strata")
-    app.settings.ninfer_thinking_budget = 1000
     # The test app's backend cannot be renamed (the owned-agent authority check refuses it), so the request
-    # builder is told it is NInfer instead; the app's own clamp and fallback logic is what is under test.
+    # builder is told it is NInfer with a 1000-token budget (the app now reads the budget per backend); the app's own clamp and fallback logic is what is under test.
     build = TurnEngine.compact_request
     monkeypatch.setattr(TurnEngine, "compact_request",
-                        staticmethod(lambda **kw: build(**{**kw, "backend_name": "ninfer"})))
+                        staticmethod(lambda **kw: build(**{**kw, "backend_name": "ninfer", "thinking_budget": 1000})))
     async with app.run_test() as pilot:
         await _run(app, pilot)
     assert served["rounds"] == 9, notes

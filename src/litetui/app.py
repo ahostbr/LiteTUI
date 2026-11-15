@@ -9490,7 +9490,7 @@ class LiteTUI(App):
                 tools=self._remember_chat_tools(),  # advertised even when OFF — see turn_engine
                 backend_name=self.backend.name,
                 graded_thinking_models=self.settings.lmstudio_graded_thinking_models,
-                thinking_budget=self.settings.ninfer_thinking_budget,
+                thinking_budget=TurnEngine.thinking_budget_for(self.settings, self.backend.name),
             )
             # The chat template prints the effort in the FIRST lines of the prompt ("Reasoning Effort: 50"), so a request with a
             # different effort re-reads the whole prompt. A compaction on NInfer must send this exact value.
@@ -10776,7 +10776,7 @@ class LiteTUI(App):
                     tools=compact_tools if compact_tools is not None else self._all_tools(),  # advertised even when OFF — see turn_engine
                     backend_name=self.backend.name,
                     graded_thinking_models=self.settings.lmstudio_graded_thinking_models,
-                    thinking_budget=self.settings.ninfer_thinking_budget,
+                    thinking_budget=TurnEngine.thinking_budget_for(self.settings, self.backend.name),
                     pinned_effort=(getattr(self, "_last_chat_effort", None) if compact_tools is not None
                                        else TurnEngine.UNPINNED),
                     supported_reasoning_levels=(
@@ -10840,7 +10840,7 @@ class LiteTUI(App):
                             tools=compact_tools if compact_tools is not None else self._all_tools(),
                             backend_name=self.backend.name,
                             graded_thinking_models=self.settings.lmstudio_graded_thinking_models,
-                            thinking_budget=self.settings.ninfer_thinking_budget,
+                            thinking_budget=TurnEngine.thinking_budget_for(self.settings, self.backend.name),
                             pinned_effort=(getattr(self, "_last_chat_effort", None) if compact_tools is not None
                                                else TurnEngine.UNPINNED),
                             supported_reasoning_levels=(

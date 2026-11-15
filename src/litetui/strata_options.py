@@ -320,7 +320,7 @@ OPTIONS: tuple[Opt, ...] = (
        "start (the server's default). An engine older than 0.1.39 keeps start.",
        choices=("start", "end")),
     _o("reasoning_budget_tokens", _V, ("key", "reasoning_budget_tokens"), "int", "Cap thinking (tokens)",
-       "Cap the thinking of every request at this many tokens (0 or blank: no cap).", lo=0),
+       "The most a request may think, in tokens: xhigh uses all of it, high 3/4, medium 1/2, low 1/4; the answer gets this much room on top (0 or blank: no cap).", lo=0),
     _o("reasoning_loop_recovery", _V, ("key", "reasoning_loop_recovery"), "choice", "Repeated-reasoning guard",
        "Detects a model repeating whole passages: off, stop (ends the reply) or recover.",
        choices=("off", "stop", "recover"), convert=(("off", False),)),

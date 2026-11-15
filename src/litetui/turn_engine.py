@@ -69,8 +69,40 @@ def request_thinks(extra: dict, effort=_UNPINNED) -> bool:
     return (extra.get("chat_template_kwargs") or {}).get("enable_thinking") is not False
 
 
+#: Backend -> the request key that caps thinking, and the setting that holds N (T1312 NInfer, T1318 Strata).
+#: Xolotl serves through Strata's `serve/server.py`, so it takes Strata's key and Strata's one setting.
+THINKING_BUDGET_KEY = {"ninfer": "thinking_budget", "strata": "reasoning_budget_tokens",
+                       "xolotl": "reasoning_budget_tokens"}
+_THINKING_BUDGET_SETTING = {"ninfer": "ninfer_thinking_budget", "strata": "strata_reasoning_budget_tokens",
+                            "xolotl": "strata_reasoning_budget_tokens"}
+
+
+def thinking_budget_for(settings, backend_name: str) -> int | None:
+    """The per-request thinking cap N for this backend's setting, or None (no budget for the backend, or unset)."""
+    name = _THINKING_BUDGET_SETTING.get(backend_name)
+    value = getattr(settings, name, None) if name else None
+    return value if isinstance(value, int) and not isinstance(value, bool) and value > 0 else None
+
+
+#: Strata and Xolotl follow the think level (T1318: Flash-Next overthinks on xhigh): the setting is the TOP budget
+#: N and a lower level gets a share of it. Level as the user set it, BEFORE the backend's fold (Strata folds
+#: xhigh -> high on the wire, which would give both the same budget). An omitted level thinks at the default: N.
+_LEVEL_BUDGET_SHARE = {"xhigh": (1, 1), "max": (1, 1), "ultra": (1, 1), "high": (3, 4), "medium": (1, 2),
+                       "low": (1, 4), "minimal": (1, 4)}
+#: Backends whose budget follows the level; NInfer keeps the one budget T1312 gave it.
+_LEVEL_BUDGET_BACKENDS = frozenset({"strata", "xolotl"})
+
+
+def level_budget(backend_name: str, budget: int | None, level: str | None) -> int | None:
+    """`budget` (the top N) scaled to the think `level` for Strata/Xolotl; NInfer and others get it unchanged."""
+    if not budget or backend_name not in _LEVEL_BUDGET_BACKENDS:
+        return budget
+    num, den = _LEVEL_BUDGET_SHARE.get(level or "", (1, 1))
+    return max(1, int(budget) * num // den)
+
+
 def with_thinking_room(max_tokens, budget: int | None) -> int:
-    """`max_tokens` plus the thinking budget. NInfer counts thinking INSIDE max_tokens and its capacity is
+    """`max_tokens` plus the thinking budget. NInfer and Strata count thinking INSIDE max_tokens and its capacity is
     min(requested, context left) (ninfer-all src/runtime/engine/effective_thinking_budget.h:26-42), so a budget
     equal to max_tokens lets thinking eat the whole output and the reply ends with no answer (Ryan's Edge0
     request #2: out = 16,384 = max_tokens). The answer keeps the room the caller asked for."""
@@ -306,10 +338,13 @@ class TurnEngine:
         # is gated on the backend name (the same shape as the codex gate above).
         if backend_name == "ninfer":
             extra["return_progress"] = True
-            # Only a request that thinks: a non-thinking one gets no cap and no extra room.
-            if thinking_budget and thinking_budget > 0 and request_thinks(extra):
-                extra["thinking_budget"] = int(thinking_budget)
-                kwargs["max_tokens"] = with_thinking_room(kwargs["max_tokens"], thinking_budget)
+        # Only a request that thinks: a non-thinking one gets no cap and no extra room.
+        budget_key = THINKING_BUDGET_KEY.get(backend_name)
+        if budget_key and thinking_budget and thinking_budget > 0 and request_thinks(extra):
+            # `level`: what the user chose, before the fold `_resolve_reasoning_effort` applied to the wire value.
+            budget = level_budget(backend_name, thinking_budget, level)
+            extra[budget_key] = int(budget)
+            kwargs["max_tokens"] = with_thinking_room(kwargs["max_tokens"], budget)
         if extra:
             kwargs["extra_body"] = extra
         return kwargs
@@ -318,6 +353,7 @@ class TurnEngine:
     COMPACT_MIN_RETRY_TOKENS = 1024
     #: compact_request(pinned_effort=...) default: use the effort the request itself resolved.
     UNPINNED = _UNPINNED
+    thinking_budget_for = staticmethod(thinking_budget_for)
 
     @staticmethod
     def max_tokens_hint(message: str) -> int | None:
@@ -376,13 +412,17 @@ class TurnEngine:
         # "prefill XX%" every other turn shows.
         if backend_name == "ninfer":
             extra_body["return_progress"] = True
-            # The engine ends thinking at the cap and goes on to the answer; a compaction that thinks to
-            # max_tokens would otherwise die with no summary. Never 0: the engine answers 400 to a value < 1.
-            # `pinned_effort`: the cache-friendly compaction is re-pinned to the chat turn's effort by the caller,
-            # so whether it thinks is decided by that effort, not by compact_thinking_level.
-            if thinking_budget and thinking_budget > 0 and request_thinks(extra_body, pinned_effort):
-                extra_body["thinking_budget"] = int(thinking_budget)
-                max_tokens = with_thinking_room(max_tokens, thinking_budget)
+        # The engine ends thinking at the cap and goes on to the answer; a compaction that thinks to
+        # max_tokens would otherwise die with no summary. Never 0: NInfer answers 400 to a value < 1.
+        # `pinned_effort`: the cache-friendly compaction is re-pinned to the chat turn's effort by the caller,
+        # so whether it thinks is decided by that effort, not by compact_thinking_level.
+        budget_key = THINKING_BUDGET_KEY.get(backend_name)
+        if budget_key and thinking_budget and thinking_budget > 0 and request_thinks(extra_body, pinned_effort):
+            # Pinned: only the chat turn's wire effort is known here, so Strata's fold applies (xhigh reads as high).
+            budget = level_budget(backend_name, thinking_budget,
+                                  thinking_level if pinned_effort is _UNPINNED else pinned_effort)
+            extra_body[budget_key] = int(budget)
+            max_tokens = with_thinking_room(max_tokens, budget)
         kwargs: dict = {
             "model": model_id or "local-model",
             "messages": messages,
