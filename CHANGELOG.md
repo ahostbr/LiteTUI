@@ -18,6 +18,19 @@ fails if this file's top released heading disagrees with it.
 
 ## [Unreleased]
 
+## [0.30.1] - 2026-11-15
+
+Thinking gets a budget with the answer's room on top of it, a model that cannot see can still use `view_image`, and engines started by an earlier session can be stopped. Nothing here has been checked end to end by the maintainer.
+
+### Added
+- **Thinking budget on NInfer and Strata.** NInfer takes a "thinking budget (tokens)" setting, sent as `thinking_budget`; Strata and Xolotl send `reasoning_budget_tokens` sized by the think level (xhigh 16,384, high 12,288, medium 8,192, low 4,096, off none). In both, `max_tokens` is the budget plus the normal answer room, so a long think can no longer use up the whole reply.
+- **`view_image` for a model that cannot see.** A text-only model gets a text report of the image instead of nothing: size, background, dominant colours per region, the foreground box and its width band by band, in about 50-100 ms. An optional `compare_to` compares two images. Vision models are unchanged, and the tool is offered to every model so the tool list stays the same across `/model` switches.
+
+### Fixed
+- **`/engine stop` and `/engine restart` stop an engine an earlier LiteTUI session started** (for example after `/agent-new`), once its pid, creation time and exe match the record.
+- **A foreign server on the Strata/Xolotl port no longer passes as Strata.** A server that answers `/health` there but is not Strata (whisper-server on :8080 was the case) is named, with the port to change, instead of being used.
+- **The registry record of a NInfer engine that died on its own is cleared**, so LiteSuite's Model Hub and later sessions stop seeing it.
+
 ## [0.30.0] - 2026-11-14
 
 The engine starts when you send, `/engine restart` exists, and local engines keep the conversation's prompt cache instead of recomputing it. Nothing here has been checked end to end by the maintainer; the engine-flow changes were tested with stub engines only.
