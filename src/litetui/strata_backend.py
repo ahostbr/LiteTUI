@@ -79,14 +79,11 @@ class StrataBackend(OwnedEngineLifecycle):
 
     @staticmethod
     def _health_state(host: str, timeout: float = 2.0) -> str | None:
-        """'loaded' | 'unloaded' | None (nothing answering) from `GET /health`."""
-        try:
-            req = urllib.request.Request(f"{host}/health", headers={"User-Agent": "LiteTUI"})
-            with urllib.request.urlopen(req, timeout=timeout) as r:
-                body = json.load(r)
-        except Exception:  # noqa: BLE001 - refused, timed out, not JSON: nothing usable is there
-            return None
-        if not isinstance(body, dict):
+        """'loaded' | 'unloaded' | None (no Strata server answering) from `GET /health`.
+        A server that does not identify itself as Strata (T1316: whisper-server on :8080 also
+        answers /health 200) is None, as if nothing were there."""
+        kind, body, _said = strata_engine.probe(host, timeout)
+        if kind != "strata" or not isinstance(body, dict):
             return None
         return "unloaded" if body.get("loaded") is False else "loaded"
 
@@ -111,8 +108,15 @@ class StrataBackend(OwnedEngineLifecycle):
                 "load it again (tens of GB of RAM). Load it from that server's own page, or stop it "
                 "and /engine start.")
         raise BackendError(
-            f"no {self.label} server is answering at {host} — /engine start to load the chosen model, or "
-            f"start it yourself and set {self._setting_prefix}_host. Install: {self._install_where}.")
+            f"no {self.label} server is answering at {host}{self._foreign_note(host)} — /engine start to load "
+            f"the chosen model, or start it yourself and set {self._setting_prefix}_host. "
+            f"Install: {self._install_where}.")
+
+    def _foreign_note(self, host: str) -> str:
+        """" (port N is held by X, which is not a Strata server (...))" when a foreign process holds
+        the port, else "" — so "no server is answering" never hides who is in the way (T1316)."""
+        clause = strata_engine.foreign_clause(host, self.label)
+        return f" ({clause})" if clause else ""
 
     # -- stop / status (start is OwnedEngineLifecycle.start_engine) ------------
 
@@ -122,7 +126,8 @@ class StrataBackend(OwnedEngineLifecycle):
             if self._health_state(host) is not None:
                 return (f"the {self.label} server at {host} was not started by this LiteTUI — stop it where "
                         "it was started (its window, or the app that ran it).")
-            return NOTHING_RUNNING
+            note = self._foreign_note(host)
+            return f"no {self.label} server is running at {host}{note}." if note else NOTHING_RUNNING
         host = self._owned.host
         result = self.shutdown()
         if getattr(result, "main_exited", False) and not getattr(result, "retained", True):
@@ -139,7 +144,8 @@ class StrataBackend(OwnedEngineLifecycle):
         if said == "NOT answering":
             path = self._engine.chosen_config(self._settings)
             chosen = path.stem.removeprefix("strata-") if path else "none chosen — /model"
-            return f"no {self.label} server at {host}. Model for the next /engine start: {chosen}."
+            return (f"no {self.label} server at {host}{self._foreign_note(host)}. "
+                    f"Model for the next /engine start: {chosen}.")
         return f"attached {self.label} server at {host}: {said}"
 
     # -- models --------------------------------------------------------------

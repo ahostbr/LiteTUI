@@ -425,6 +425,20 @@ def _never_dial_out_from_a_constructor(request, monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _never_probe_a_real_engine_port(monkeypatch):
+    """T1316: `strata_engine.refuse_reason` now asks who holds the engine's port (HTTP GETs plus a
+    psutil listener scan). On a dev box that port is real: whisper-server sits on :8080, so a test
+    that only meant "nothing is running" got "port 8080 is held by whisper-server.exe". The test
+    world has a free port. `probe` stays real (backend tests answer it from their own loopback
+    fake server); what is stubbed is the "who holds the port" verdict, `foreign_clause`. A test
+    about that verdict puts the real one back (`strata_engine.foreign_clause` captured at its
+    module load, before this fixture runs) and fakes `probe` and `port_holder` itself."""
+    from litetui import strata_engine
+
+    monkeypatch.setattr(strata_engine, "foreign_clause", lambda host, label: None)
+
+
+@pytest.fixture(autouse=True)
 def _release_owned_test_seats():
     """Give back every seat `_owned_seat.owned_app` opened during this test.
 

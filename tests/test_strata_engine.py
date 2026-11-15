@@ -12,6 +12,10 @@ from litetui.llm_backend import BackendError
 
 GB = 10 ** 9
 
+#: conftest stubs the port verdict per test (no test may ask a real port who holds it); these are
+#: the real ones, read at module load before any fixture runs.
+_REAL_FOREIGN_CLAUSE, _REAL_PROBE, _REAL_PORT_HOLDER = eng.foreign_clause, eng.probe, eng.port_holder
+
 
 class _Settings:
     strata_host = ""
@@ -202,6 +206,124 @@ def test_start_refuses_before_spawning_when_a_server_already_answers(tmp_path):
                   notice=lambda: noticed.append(1))
     assert spawned == [] and noticed == []               # T865: no promise before a refusal
     assert "REFUSED" in eng.log_path().read_text(encoding="utf-8")
+
+
+# ── who is on the port (T1316) ───────────────────────────────────────────────
+
+def _world(monkeypatch, *, answer, holder):
+    """The port as the test describes it: `answer` is what `probe` returns, `holder` what listens."""
+    monkeypatch.setattr(eng, "foreign_clause", _REAL_FOREIGN_CLAUSE)
+    monkeypatch.setattr(eng, "probe", lambda host, timeout=2.0: answer)
+    monkeypatch.setattr(eng, "port_holder", lambda host: holder)
+
+
+WHISPER = eng.Holder(True, 20044, "whisper-server.exe")
+
+
+def test_a_foreign_health_answer_is_refused_naming_the_process_and_the_way_out(tmp_path, monkeypatch):
+    settings, _ = _install(tmp_path, "iq3_s")
+    _world(monkeypatch, answer=("foreign", {"status": "ok"}, "/health: 200, /v1/models: 404"), holder=WHISPER)
+    spawned = []
+    with pytest.raises(BackendError) as exc:
+        eng.start(settings, healthy=lambda host: False, spawn=lambda *a, **k: spawned.append(a))
+    assert str(exc.value) == (
+        'port 8080 is held by whisper-server.exe (pid 20044), which is not a Strata server '
+        '(/health: 200, /v1/models: 404) — stop it or change the "port" in strata-iq3_s.json; '
+        'nothing was started.')
+    assert spawned == [] and "REFUSED" in eng.log_path().read_text(encoding="utf-8")
+
+
+def test_a_real_strata_is_still_attached_to_with_the_same_words(tmp_path, monkeypatch):
+    settings, _ = _install(tmp_path, "iq3_s")
+    _world(monkeypatch, answer=("strata", {"service": "strata", "loaded": True}, ""), holder=WHISPER)
+    with pytest.raises(BackendError) as exc:
+        eng.start(settings, healthy=lambda host: True, spawn=lambda *a, **k: pytest.fail("spawned"))
+    assert str(exc.value) == "a Strata server is already answering at http://127.0.0.1:8080 — attach to it; nothing was started."
+
+
+def test_a_port_held_by_something_that_answers_no_http_is_refused_naming_it(tmp_path, monkeypatch):
+    settings, _ = _install(tmp_path, "iq3_s")
+    _world(monkeypatch, answer=("silent", None, "no answer to /health"), holder=eng.Holder(True, 777, "nginx.exe"))
+    with pytest.raises(BackendError, match=r"port 8080 is held by nginx\.exe \(pid 777\), which does not answer HTTP like a Strata server"):
+        eng.start(settings, healthy=lambda host: False, spawn=lambda *a, **k: pytest.fail("spawned"))
+
+
+def test_an_owner_that_cannot_be_read_is_said_not_guessed(tmp_path, monkeypatch):
+    settings, _ = _install(tmp_path, "iq3_s")
+    _world(monkeypatch, answer=("foreign", {}, "/health: 200, /v1/models: 404"),
+           holder=eng.Holder(True, 4321, None, "AccessDenied"))
+    with pytest.raises(BackendError, match=r"a process \(pid 4321; its name could not be read: AccessDenied\)"):
+        eng.start(settings, healthy=lambda host: False, spawn=lambda *a, **k: pytest.fail("spawned"))
+    _world(monkeypatch, answer=("foreign", {}, "/health: 200, /v1/models: 404"), holder=eng.Holder())
+    with pytest.raises(BackendError, match=r"another server \(its owner could not be found\)"):
+        eng.start(settings, healthy=lambda host: False, spawn=lambda *a, **k: pytest.fail("spawned"))
+
+
+def test_a_free_port_and_a_real_server_with_its_model_unloaded_are_not_foreign(tmp_path, monkeypatch):
+    settings, (path,) = _install(tmp_path, "iq3_s")
+    cfg = eng.read_config(path)
+    _world(monkeypatch, answer=("silent", None, "no answer to /health"), holder=eng.Holder())
+    assert eng.refuse_reason(settings, cfg, "http://127.0.0.1:8080", healthy=lambda h: False) is None
+    _world(monkeypatch, answer=("strata", {"service": "strata", "loaded": False}, ""), holder=WHISPER)
+    assert eng.foreign_clause("http://127.0.0.1:8080", "Strata") is None
+
+
+def test_an_explicit_host_setting_is_the_remedy_when_it_chose_the_port(tmp_path, monkeypatch):
+    settings, _ = _install(tmp_path, "iq3_s")
+    settings.strata_host = "http://127.0.0.1:8080"
+    _world(monkeypatch, answer=("foreign", {}, "/health: 200, /v1/models: 404"), holder=WHISPER)
+    with pytest.raises(BackendError, match=r"stop it or change strata_host in /settings"):
+        eng.start(settings, healthy=lambda host: False, spawn=lambda *a, **k: pytest.fail("spawned"))
+
+
+def test_probe_reads_service_then_falls_back_to_the_models_list(monkeypatch):
+    def serve(**routes):
+        monkeypatch.setattr(eng, "_get", lambda url, timeout: routes.get(url.rsplit("8080", 1)[-1], (None, None)))
+
+    h = "http://127.0.0.1:8080"
+    serve(**{"/health": (200, {"status": "ok", "service": "strata", "loaded": True})})
+    assert _REAL_PROBE(h)[0] == "strata"
+    serve(**{"/health": (200, {"status": "ok", "service": "llama.cpp"}), "/v1/models": (200, {"data": []})})
+    kind, _, said = _REAL_PROBE(h)
+    assert kind == "foreign" and "llama.cpp" in said          # it named itself: no fallback
+    serve(**{"/health": (200, {"status": "ok"}), "/v1/models": (200, {"object": "list", "data": []})})
+    assert _REAL_PROBE(h)[0] == "strata"                       # an older build: the models list tells
+    serve(**{"/health": (200, {"status": "ok"}), "/v1/models": (404, None)})
+    assert _REAL_PROBE(h) == ("foreign", {"status": "ok"}, "/health: 200, /v1/models: 404")
+    serve(**{"/health": (None, None)})
+    assert _REAL_PROBE(h)[0] == "silent"
+
+
+def test_port_holder_names_the_listener_and_says_when_it_cannot_ask(monkeypatch):
+    import collections
+    import psutil
+    C = collections.namedtuple("C", "status laddr pid")
+    A = collections.namedtuple("A", "ip port")
+    monkeypatch.setattr(psutil, "net_connections", lambda kind="tcp": [
+        C("LISTEN", A("192.168.1.5", 8080), 1),          # another interface: does not block loopback
+        C("ESTABLISHED", A("127.0.0.1", 8080), 2),
+        C("LISTEN", A("127.0.0.1", 9999), 3),
+        C("LISTEN", A("127.0.0.1", 8080), 20044)])
+
+    class P:
+        def __init__(self, pid):
+            self.pid = pid
+
+        def name(self):
+            return "whisper-server.exe"
+
+    monkeypatch.setattr(psutil, "Process", P)
+    got = _REAL_PORT_HOLDER("http://127.0.0.1:8080")
+    assert (got.found, got.pid, got.exe) == (True, 20044, "whisper-server.exe")
+    assert _REAL_PORT_HOLDER("http://127.0.0.1:7777").found is False
+    assert _REAL_PORT_HOLDER("http://10.0.0.9:8080").found is False      # not this machine: not asked
+
+    def denied(kind="tcp"):
+        raise psutil.AccessDenied()
+
+    monkeypatch.setattr(psutil, "net_connections", denied)
+    got = _REAL_PORT_HOLDER("http://127.0.0.1:8080")
+    assert got.found is False and got.error == "AccessDenied"
 
 
 def test_start_refuses_on_memory_before_spawning(tmp_path, monkeypatch):

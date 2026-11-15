@@ -33,6 +33,7 @@ import json
 import os
 import subprocess
 import time
+import urllib.error
 import urllib.request
 from pathlib import Path
 
@@ -267,10 +268,129 @@ def memory_refusal(cfg: dict, *, ram_free: int | None, commit_free: int | None,
     return pin_refusal("Strata", pinned, ram_free=ram_free, commit_free=commit_free, gpu=gpu)
 
 
+# ── who is on the port (T1316) ───────────────────────────────────────────────
+# Whisper's server on :8080 answered `/health` 200 and was taken for Strata, so every start
+# said "attach to it". A server counts as Strata/Xolotl only when it says so.
+
+def _get(url: str, timeout: float) -> tuple[int | None, object]:
+    """(HTTP status, parsed JSON or None); (None, None) when nothing answered HTTP at all."""
+    try:
+        req = urllib.request.Request(url, headers={"User-Agent": "LiteTUI"})
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            status, raw = r.status, r.read()
+    except urllib.error.HTTPError as e:
+        status, raw = e.code, b""
+    except Exception:  # noqa: BLE001 - refused, timed out, not HTTP: nothing usable is there
+        return None, None
+    try:
+        return status, json.loads(raw)
+    except ValueError:
+        return status, None
+
+
+def probe(host: str, timeout: float = 2.0) -> tuple[str, object, str]:
+    """What answers at `host`: ('strata' | 'foreign' | 'silent', the /health JSON or None, what it said).
+
+    Strata's server (and Xolotl's, which is the same `serve/server.py`) says `"service": "strata"`
+    in `/health`. A build without that field is told by `/v1/models` answering 200 with a `data`
+    list. Anything that answers HTTP and is neither is 'foreign'; nothing answering is 'silent'."""
+    status, body = _get(f"{host}/health", timeout)
+    if status is None:
+        return "silent", None, "no answer to /health"
+    if isinstance(body, dict) and "service" in body:
+        if body["service"] == "strata":
+            return "strata", body, ""
+        return "foreign", body, f"/health says service={body['service']!r}"
+    m_status, models = _get(f"{host}/v1/models", timeout)
+    if m_status == 200 and isinstance(models, dict) and isinstance(models.get("data"), list):
+        return "strata", body, ""
+    return "foreign", body, f"/health: {status}, /v1/models: {m_status if m_status is not None else 'no answer'}"
+
+
+class Holder:
+    """Who listens on a port. `found` False = nothing listening, or it could not be asked (`error`)."""
+
+    def __init__(self, found: bool = False, pid: int | None = None, exe: str | None = None,
+                 error: str | None = None) -> None:
+        self.found, self.pid, self.exe, self.error = found, pid, exe, error
+
+    def describe(self) -> str:
+        if self.exe:
+            return f"{self.exe} (pid {self.pid})"
+        if self.pid:
+            return f"a process (pid {self.pid}; its name could not be read: {self.error or 'unknown'})"
+        return f"something (its owner could not be read: {self.error or 'unknown'})"
+
+
+_LOOPBACK = {"127.0.0.1", "localhost", "::1", "0.0.0.0", ""}
+
+
+def port_holder(host: str) -> Holder:
+    """The local process listening on `host`'s port (psutil; `ninfer_engine._listening_ports` is the
+    per-pid prior art). Not asked for a host that is not this machine."""
+    from urllib.parse import urlparse
+    parts = urlparse(host)
+    if (parts.hostname or "") not in _LOOPBACK or not parts.port:
+        return Holder()
+    try:
+        import psutil
+        conns = psutil.net_connections(kind="tcp")
+    except Exception as exc:  # noqa: BLE001 - AccessDenied on some platforms: say so, never guess
+        return Holder(error=type(exc).__name__)
+    for c in conns:
+        if c.status != "LISTEN" or not c.laddr or c.laddr.port != parts.port:
+            continue
+        if c.laddr.ip not in _LOOPBACK | {"::"}:
+            continue                      # bound to another interface: it does not block loopback
+        if not c.pid:
+            return Holder(True, None, None, "AccessDenied")
+        try:
+            return Holder(True, c.pid, psutil.Process(c.pid).name())
+        except psutil.NoSuchProcess:
+            continue                      # gone between the two calls
+        except Exception as exc:  # noqa: BLE001
+            return Holder(True, c.pid, None, type(exc).__name__)
+    return Holder()
+
+
+def foreign_clause(host: str, label: str) -> str | None:
+    """"port N is held by X, which is not a `label` server (...)" when something that is NOT one
+    holds the port, else None. A real server (even with its model unloaded) is left to the
+    caller; a free port is None."""
+    kind, _body, said = probe(host)
+    if kind == "strata":
+        return None
+    holder = port_holder(host)
+    if kind == "silent" and not holder.found:
+        return None                       # nothing there: the port is free
+    port = host.rsplit(":", 1)[-1]
+    who = holder.describe() if holder.found else "another server (its owner could not be found)"
+    verdict = (f"which is not a {label} server ({said})" if kind == "foreign"
+               else f"which does not answer HTTP like a {label} server ({said})")
+    return f"port {port} is held by {who}, {verdict}"
+
+
+def foreign_reason(host: str, label: str, remedy: str) -> str | None:
+    """The refusal for a start: `foreign_clause`, what to do, and that nothing was started."""
+    clause = foreign_clause(host, label)
+    return f"{clause} — stop it or change {remedy}; nothing was started." if clause else None
+
+
+def port_remedy(settings, host_setting: str, config: Path | None) -> str:
+    """Where the port is set, for `foreign_reason`'s remedy: the host setting when one is given
+    (it wins over the config), else the chosen config's own "port"."""
+    if str(getattr(settings, host_setting, "") or "").strip() or config is None:
+        return f"{host_setting} in /settings"
+    return f"the \"port\" in {config.name}"
+
+
 def refuse_reason(settings, cfg: dict, host: str, *, healthy) -> str | None:
     """Why a start must NOT happen, or None (the user 2026-09-10: check, ask, then load)."""
     if healthy(host):
         return f"a Strata server is already answering at {host} — attach to it; nothing was started."
+    foreign = foreign_reason(host, "Strata", port_remedy(settings, "strata_host", strata_config(settings)))
+    if foreign:
+        return foreign
     if engine_process_alive():
         return ("a Strata engine process is already running (still loading, or started elsewhere) — "
                 "wait for it or stop it where it was started; nothing was started.")

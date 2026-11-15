@@ -186,6 +186,10 @@ def refuse_reason(settings, cfg: dict, host: str, *, healthy) -> str | None:
     """Why a start must NOT happen, or None (the user 2026-09-10: check, ask, then load)."""
     if healthy(host):
         return f"a Xolotl server is already answering at {host} — attach to it; nothing was started."
+    foreign = strata_engine.foreign_reason(
+        host, "Xolotl", strata_engine.port_remedy(settings, "xolotl_host", xolotl_config(settings)))
+    if foreign:
+        return foreign
     if engine_process_alive():
         return ("a Xolotl or Strata engine process is already running (still loading, or started "
                 "elsewhere) — wait for it or stop it where it was started; nothing was started.")

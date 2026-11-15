@@ -12,6 +12,8 @@ from litetui.llm_backend import BackendError
 
 GB = 10 ** 9
 GIB = 1 << 30
+#: conftest stubs the port verdict per test (no test may ask a real port who holds it); the real one, read at load.
+_REAL_FOREIGN_CLAUSE = strata_engine.foreign_clause
 
 
 class _Settings:
@@ -208,6 +210,36 @@ def test_start_refuses_before_spawning_when_a_server_already_answers(tmp_path):
                   notice=lambda: noticed.append(1))
     assert spawned == [] and noticed == []
     assert "REFUSED" in eng.log_path().read_text(encoding="utf-8")
+
+
+def _foreign_port(monkeypatch, answer, holder):
+    monkeypatch.setattr(strata_engine, "foreign_clause", _REAL_FOREIGN_CLAUSE)   # conftest stubs it per test
+    monkeypatch.setattr(strata_engine, "probe", lambda host, timeout=2.0: answer)
+    monkeypatch.setattr(strata_engine, "port_holder", lambda host: holder)
+
+
+def test_a_foreign_server_on_xolotls_port_is_refused_naming_the_process(tmp_path, monkeypatch):
+    """T1316: the same refusal as Strata's, in Xolotl's words and with Xolotl's config named."""
+    settings, _ = _install(tmp_path, "ds41", port=8080)
+    _foreign_port(monkeypatch, ("foreign", {"status": "ok"}, "/health: 200, /v1/models: 404"),
+                  strata_engine.Holder(True, 20044, "whisper-server.exe"))
+    with pytest.raises(BackendError) as exc:
+        eng.start(settings, healthy=lambda host: False, spawn=lambda *a, **k: pytest.fail("spawned"))
+    assert str(exc.value) == (
+        'port 8080 is held by whisper-server.exe (pid 20044), which is not a Xolotl server '
+        '(/health: 200, /v1/models: 404) — stop it or change the "port" in strata-ds41.json; nothing was started.')
+
+
+def test_a_real_xolotl_is_still_attached_to_and_a_silent_listener_is_named(tmp_path, monkeypatch):
+    settings, _ = _install(tmp_path, "ds41")
+    _foreign_port(monkeypatch, ("strata", {"service": "strata", "loaded": True}, ""),
+                  strata_engine.Holder(True, 1, "python.exe"))
+    with pytest.raises(BackendError) as exc:
+        eng.start(settings, healthy=lambda host: True, spawn=lambda *a, **k: pytest.fail("spawned"))
+    assert str(exc.value) == "a Xolotl server is already answering at http://127.0.0.1:8150 — attach to it; nothing was started."
+    _foreign_port(monkeypatch, ("silent", None, "no answer to /health"), strata_engine.Holder(True, 777, "nginx.exe"))
+    with pytest.raises(BackendError, match=r"port 8150 is held by nginx\.exe \(pid 777\), which does not answer HTTP like a Xolotl server"):
+        eng.start(settings, healthy=lambda host: False, spawn=lambda *a, **k: pytest.fail("spawned"))
 
 
 def test_start_refuses_on_memory_before_spawning(tmp_path, monkeypatch):

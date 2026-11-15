@@ -85,7 +85,10 @@ class FakeEngine:
     def get(self, path: str):
         route = urlsplit(path).path
         if route == "/health":
-            return 200, {"status": "ok", "loaded": self.loaded}
+            body = {"status": "ok", "loaded": self.loaded}
+            if self.kind == "strata":
+                body["service"] = "strata"      # serve/server.py always says so; T1316 relies on it
+            return 200, body
         if route == "/models":
             return 200, {"data": [{"id": self.model, "status": {"value": "loaded" if self.loaded else "unloaded"}}]}
         if route == "/slots":

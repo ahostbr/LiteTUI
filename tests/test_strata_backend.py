@@ -17,6 +17,9 @@ from litetui.settings import Settings
 from litetui.strata_backend import STRATA_REASONING_LEVELS, StrataBackend
 from litetui.turn_engine import _resolve_reasoning_effort
 
+#: conftest stubs this per test (no test may ask a real port who holds it); read at load, before that.
+_REAL_FOREIGN_CLAUSE = strata_engine.foreign_clause
+
 
 @pytest.fixture(autouse=True)
 def _no_real_litesuite_config(monkeypatch, tmp_path):
@@ -30,7 +33,7 @@ def server():
     load switch `serve/server.py` answers — POST /v1/unload and /v1/load (200 with the new
     state, 409 while a request runs, 404 on a build without them)."""
     state = {"loaded": True, "images": False, "busy": 0, "switch": True, "unload_status": None,
-             "load_fails": None, "posts": []}
+             "load_fails": None, "posts": [], "service": "strata", "models": True}
 
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, *a):
@@ -65,12 +68,17 @@ def server():
 
         def do_GET(self):
             status = {"value": "loaded" if state["loaded"] else "unloaded"}
+            health = {"status": "ok", "loaded": state["loaded"]}
+            if state["service"] is not None:
+                health["service"] = state["service"]      # None: a build without the field, or not Strata at all
             body = {
-                "/health": {"status": "ok", "loaded": state["loaded"], "service": "strata"},
+                "/health": health,
                 "/v1/models": {"object": "list", "data": [{
                     "id": "qwen3.8-flash-next-iq3_xxs", "status": status, "meta": {"n_ctx": 150000},
                     "architecture": {"input_modalities": ["text", "image"] if state["images"] else ["text"]}}]},
             }.get(self.path)
+            if self.path == "/v1/models" and not state["models"]:
+                body = None                               # whisper-server: /health 200, /v1/models 404
             payload = json.dumps(body or {}).encode()
             self.send_response(200 if body else 404)
             self.send_header("Content-Type", "application/json")
@@ -128,6 +136,34 @@ def test_an_unloaded_server_is_not_ready_because_a_turn_would_reload_it(server):
         asyncio.run(backend.ensure_chat_ready("qwen3.8-flash-next-iq3_xxs"))
     assert backend.loaded_models() == [] and backend.seat_snapshot("qwen3.8-flash-next-iq3_xxs") is None
     assert "UNLOADED" in backend.engine_status()
+
+
+def test_a_foreign_server_on_the_port_is_not_strata_and_every_verb_says_who_is_there(server, monkeypatch):
+    """T1316: whisper-server on :8080 answers /health 200 and 404s /v1/models. It was 'loaded'."""
+    server["service"], server["models"] = None, False
+    monkeypatch.setattr(strata_engine, "foreign_clause", _REAL_FOREIGN_CLAUSE)
+    monkeypatch.setattr(strata_engine, "port_holder", lambda host: strata_engine.Holder(True, 20044, "whisper-server.exe"))
+    backend = _backend(server["host"])
+    assert backend._health_state(server["host"]) is None and backend._health(server["host"]) is False
+    with pytest.raises(BackendError, match=r"no Strata server is answering .*whisper-server\.exe \(pid 20044\)"):
+        asyncio.run(backend.ensure_running())
+    assert "whisper-server.exe (pid 20044)" in backend.stop_engine()
+    status = backend.engine_status()
+    assert status.startswith("no Strata server at") and "whisper-server.exe" in status and "attached" not in status
+
+
+def test_a_build_without_the_service_field_is_still_strata_when_v1_models_lists_models(server):
+    server["service"] = None
+    backend = _backend(server["host"])
+    assert backend._health_state(server["host"]) == "loaded"
+    assert asyncio.run(backend.ensure_running()) == "ok"
+    server["loaded"] = False
+    assert backend._health_state(server["host"]) == "unloaded"
+
+
+def test_another_service_name_in_health_is_not_strata_even_with_a_models_list(server):
+    server["service"] = "llama.cpp"
+    assert _backend(server["host"])._health_state(server["host"]) is None
 
 
 def test_no_server_names_the_two_ways_forward_and_never_raises_from_base_url():
