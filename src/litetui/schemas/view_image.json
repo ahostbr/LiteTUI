@@ -2,13 +2,17 @@
   "type": "function",
   "function": {
     "name": "view_image",
-    "description": "Look at an image file on disk. Give an absolute path. The image is attached to the conversation and you will see it in the next message -- the result of this call is only a confirmation, not the picture.",
+    "description": "Look at an image file on disk. Give an absolute path. If you can see images, the image is attached to the conversation and you will see it in the next message -- the result of this call is only a confirmation, not the picture. If you cannot see images, the result is a text report of the picture instead: colours by region, the foreground silhouette's width per row band, and bright and dark regions, as numbers and pixel coordinates. Pass compare_to (a second image path) to get a side-by-side difference of the two, e.g. a reference against a render; only the text report uses it.",
     "parameters": {
       "type": "object",
       "properties": {
         "path": {
           "type": "string",
           "description": "Absolute path to a png/jpg/gif/webp/bmp file"
+        },
+        "compare_to": {
+          "type": "string",
+          "description": "Optional second image, only used when you cannot see images. `path` is the reference, this is the candidate; the report compares them on the reference's size."
         }
       },
       "required": [

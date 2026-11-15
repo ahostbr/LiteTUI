@@ -164,20 +164,25 @@ def test_p5_a_late_tool_called_by_name_is_appended(build):
     assert tools_second[:len(tools_first)] == tools_first and _name(tools_second[-1]) == "late_probe"
 
 
-def test_p5_view_image_arriving_late_does_not_change_the_array(build):
-    """The 22 -> 23 case. By elimination the late tool was view_image (gate: model_type != "llm"): message 0 of that
-    conversation (4c192911) shows the seat registered (harness) and the skills index present (skill) at request 1."""
+def test_p5_view_image_is_in_the_array_for_every_model_type_so_it_never_moves(build):
+    """The 22 -> 23 case. The late tool was view_image, then gated on model_type != "llm": the array grew by one when
+    NInfer's model_info stopped reporting "llm" (message 0 of conversation 4c192911 shows the seat registered and the skills
+    index present at request 1). T1319 made view_image always offered (a text-only model gets a text report), so no
+    model_type reading can add or remove it: the array is the same for llm, None and vlm and across a /model switch."""
     a, _ = _seat(build, prefix_cache=True)
     a.model_type = "llm"
-    _, tools_first = _wire(a)
-    assert "view_image" not in [_name(t) for t in tools_first]
-    a.model_type = None                                  # NInfer's model_info reports no type
-    _, tools_second = _wire(a)
-    assert tools_second == tools_first
+    m0_first, tools_first = _wire(a)
+    assert "view_image" in [_name(t) for t in tools_first]
+    for model_type in (None, "vlm", "llm"):               # NInfer reports no type; a /model switch changes it
+        a.model_type = model_type
+        assert _wire(a) == (m0_first, tools_first), model_type
 
 
-def test_p5_control_view_image_arriving_late_changes_the_array_without_a_prefix_cache(build):
+def test_p5_control_a_tool_gated_on_model_type_changes_the_array_without_a_prefix_cache(build):
+    """CONTROL: the old view_image shape (gate: model_type != "llm"), which the measurement must still be able to see."""
     a, _ = _seat(build, prefix_cache=False)
+    a.plugins.add_tool("gated-probe", _spec("model_gated_probe", "gated on model_type"), lambda args: "ok",
+                       gate=lambda: a.model_type != "llm")
     a.model_type = "llm"
     _, tools_first = _wire(a)
     a.model_type = None

@@ -105,11 +105,11 @@ chk("...and nothing is staged", a._pending_tool_images == [])
 chk("unknown model type still tries (the tool reports, absence would be silent)",
     not FakeApp(None)._tool_view_image({"path": str(img)}).startswith("[error]"))
 
-print("\n=== it is offered only when the model can possibly see ===")
+print("\n=== it is offered to every model (T1319: a text-only model gets the text report) ===")
 names = lambda app: [t["function"]["name"] for t in app._all_tools()]
 chk("vlm    -> offered", "view_image" in names(FakeApp("vlm")))
 chk("None   -> offered (unknown is not 'no')", "view_image" in names(FakeApp(None)))
-chk("🔴 llm -> NOT offered", "view_image" not in names(FakeApp("llm")))
+chk("🔴 llm -> offered too (was NOT offered before T1319)", "view_image" in names(FakeApp("llm")))
 chk("dispatch resolves it", FakeApp("vlm")._dispatch_for("view_image") is not None)
 
 print("\n=== bad input never raises, always explains ===")
