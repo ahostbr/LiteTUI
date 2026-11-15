@@ -685,10 +685,8 @@ def stop_adopted(entry: dict, *, healthy) -> AdoptOutcome:
         with proc.oneshot():
             created, exe = proc.create_time(), proc.exe()
     except psutil.NoSuchProcess:
-        if healthy(base):
+        if not _clear_exited_record(base, pid, healthy=healthy):
             return AdoptOutcome(False, reason=f"pid {pid} no longer exists, but something answers at {base}")
-        _remove_entry(base, pid)
-        _log_event(f"cleared the record of an engine that already exited ({base}, pid {pid})")
         return AdoptOutcome(True, f"the engine LiteTUI started at {base} (pid {pid}) has already exited; its record is cleared.")
     except psutil.AccessDenied:
         return AdoptOutcome(False, reason=f"access to pid {pid} was denied")
@@ -723,6 +721,62 @@ def stop_adopted(entry: dict, *, healthy) -> AdoptOutcome:
                                   f"{len(left)} child process(es) are still running: {', '.join(map(str, left))}.")
     return AdoptOutcome(True, f"stopped the engine LiteTUI started at {base} (pid {pid}) — it and its "
                               f"{len(children)} child process(es) are confirmed gone.")
+
+
+def _clear_exited_record(base: str, pid: int, *, healthy) -> bool:
+    """Remove the record of an engine whose pid no longer exists. False, record kept, when
+    something still answers at `base`. The one clear `stop_adopted` and `clear_dead_record` share."""
+    if healthy(base):
+        return False
+    _remove_entry(base, pid)
+    _log_event(f"cleared the record of an engine that already exited ({base}, pid {pid})")
+    return True
+
+
+def clear_dead_record(entry: dict | None, *, healthy) -> bool:
+    """T1315: clear a record LiteTUI wrote for an engine that is gone, without killing anything.
+
+    Only when ALL hold: owner is litetui, kind is ninfer, the pid does not exist and nothing
+    answers at its baseUrl. A pid that exists (ours or not, reused or not) keeps the record,
+    and so does an answering port or any record another owner wrote. True when cleared."""
+    if not isinstance(entry, dict) or entry.get("owner") != "litetui" or entry.get("kind") != "ninfer":
+        return False
+    pid = entry.get("pid")
+    if not isinstance(pid, int) or isinstance(pid, bool) or pid <= 0:
+        return False
+    base = str(entry.get("baseUrl") or "").rstrip("/")
+    if not base:
+        return False
+    try:
+        import psutil
+    except ImportError:
+        return False
+    try:
+        psutil.Process(pid)
+    except psutil.NoSuchProcess:
+        return _clear_exited_record(base, pid, healthy=healthy)
+    except psutil.Error:                      # AccessDenied: it exists
+        return False
+    return False
+
+
+def clear_exited_owned(owned) -> bool:
+    """T1315: this session's own engine process exited without /engine stop (it crashed, or
+    was killed): remove its record. Quiet and repeatable: it acts only while a record still
+    names this handle's host and pid, so a status or start poll can call it every time."""
+    if not getattr(owned, "registered", True):
+        return False
+    poll = getattr(owned.proc, "poll", None)
+    if poll is None or poll() is None:
+        return False
+    host, pid = str(owned.host).rstrip("/"), getattr(owned.proc, "pid", None)
+    entry = registered_entry()
+    if not entry or entry.get("owner") != "litetui" or entry.get("pid") != pid or entry["baseUrl"] != host:
+        return False
+    if not _remove_entry(host, pid):
+        return False
+    _log_event(f"cleared the record of this session's engine that exited on its own ({host}, pid {pid})")
+    return True
 
 
 def stop_registered(entry: dict) -> bool:
@@ -868,6 +922,9 @@ def registration_state(reg: str | None, *, healthy) -> str:
         return "none"
     if healthy(reg):
         return "answering"
+    entry = registered_entry()
+    if entry and entry["baseUrl"] == reg.rstrip("/") and clear_dead_record(entry, healthy=lambda _h: False):
+        return "cleared"                      # T1315: its own pid is gone, whatever else is running
     if engine_process_alive():
         return "loading"
     unregister_host(reg)

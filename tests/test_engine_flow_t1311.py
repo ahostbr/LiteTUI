@@ -18,6 +18,7 @@ from __future__ import annotations
 import asyncio
 import ctypes
 import json
+import os
 import subprocess
 import sys
 import threading
@@ -191,8 +192,10 @@ def test_a_dead_registration_is_cleared_with_no_may_still_be_loading_line(box, m
 
 
 def test_a_silent_registration_with_a_live_process_is_loading_and_kept(box, monkeypatch):
-    """The other half: a process exists, so it IS loading — said so, and the entry stays."""
-    _register(box, "http://127.0.0.1:54149")
+    """The other half: a process exists, so it IS loading — said so, and the entry stays.
+    T1315: "a process exists" means the RECORD's pid exists (this test's own), not just any
+    ninfer-serve on the box; a record whose pid is gone is cleared instead."""
+    _register(box, "http://127.0.0.1:54149", pid=os.getpid())
     monkeypatch.setattr(NInferBackend, "_health", staticmethod(lambda host, timeout=2.0: False))
     monkeypatch.setattr(eng, "engine_process_alive", lambda: True)
     with pytest.raises(BackendError, match="still loading"):

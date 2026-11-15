@@ -362,6 +362,8 @@ class NInferBackend(OwnedEngineLifecycle):
         return await asyncio.to_thread(self._ensure_running_sync)
 
     def _ensure_running_sync(self) -> str:
+        if self._owned is not None:
+            ninfer_engine.clear_exited_owned(self._owned)        # T1315: it died on its own
         if self._owned is not None and self._owned.alive and self._health(self._owned.host):
             self._host = self._owned.host
             return f"ok (engine started by LiteTUI, pid {getattr(self._owned.proc, 'pid', '?')})"
@@ -487,6 +489,7 @@ class NInferBackend(OwnedEngineLifecycle):
 
     def engine_status(self) -> str:
         if self._owned is not None:
+            ninfer_engine.clear_exited_owned(self._owned)        # T1315: it died on its own
             alive = self._owned.alive and self._health(self._owned.host)
             return (f"LiteTUI-owned engine at {self._owned.host}: {'answering' if alive else 'NOT answering'}"
                     f"{self._capacity_note()} (log {self._owned.log_path})")
@@ -495,9 +498,9 @@ class NInferBackend(OwnedEngineLifecycle):
             # Same correction as `stop_engine`: a LiteTUI-owned entry must not
             # report as "attached", or status and stop disagree about who owns
             # the engine and the user is told to go stop it somewhere else.
-            from litetui import ninfer_engine
-
             entry = ninfer_engine.registered_entry()
+            if entry and ninfer_engine.clear_dead_record(entry, healthy=self._health):
+                entry = None                                      # T1315: its pid is gone
             if entry and entry.get("owner") == "litetui" and entry.get("pid"):
                 host = entry["baseUrl"]
                 return (f"LiteTUI-owned engine at {host} (pid {entry['pid']}, from the "
