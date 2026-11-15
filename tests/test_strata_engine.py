@@ -259,6 +259,16 @@ def test_an_owner_that_cannot_be_read_is_said_not_guessed(tmp_path, monkeypatch)
         eng.start(settings, healthy=lambda host: False, spawn=lambda *a, **k: pytest.fail("spawned"))
 
 
+def test_a_strata_still_loading_gets_the_still_loading_words_not_a_foreign_refusal(tmp_path, monkeypatch):
+    """Its process holds the port and /health does not answer yet: that is not 'held by python.exe'."""
+    settings, _ = _install(tmp_path, "iq3_s")
+    _world(monkeypatch, answer=("silent", None, "no answer to /health"), holder=eng.Holder(True, 555, "python.exe"))
+    monkeypatch.setattr(eng, "engine_process_alive", lambda: True)
+    with pytest.raises(BackendError, match="engine process is already running .*still loading") as exc:
+        eng.start(settings, healthy=lambda host: False, spawn=lambda *a, **k: pytest.fail("spawned"))
+    assert "held by" not in str(exc.value)
+
+
 def test_a_free_port_and_a_real_server_with_its_model_unloaded_are_not_foreign(tmp_path, monkeypatch):
     settings, (path,) = _install(tmp_path, "iq3_s")
     cfg = eng.read_config(path)

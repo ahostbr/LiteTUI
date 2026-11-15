@@ -114,7 +114,11 @@ class StrataBackend(OwnedEngineLifecycle):
 
     def _foreign_note(self, host: str) -> str:
         """" (port N is held by X, which is not a Strata server (...))" when a foreign process holds
-        the port, else "" — so "no server is answering" never hides who is in the way (T1316)."""
+        the port, else "" — so "no server is answering" never hides who is in the way (T1316).
+        Silent while our own engine is starting or running: its listener is the server loading
+        (the handle is published only once the spawn is ready, so `_starting` is the loading case)."""
+        if self._starting or (self._owned is not None and self._owned.alive):
+            return ""
         clause = strata_engine.foreign_clause(host, self.label)
         return f" ({clause})" if clause else ""
 

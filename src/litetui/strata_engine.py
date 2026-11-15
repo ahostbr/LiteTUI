@@ -388,12 +388,14 @@ def refuse_reason(settings, cfg: dict, host: str, *, healthy) -> str | None:
     """Why a start must NOT happen, or None (the user 2026-09-10: check, ask, then load)."""
     if healthy(host):
         return f"a Strata server is already answering at {host} — attach to it; nothing was started."
-    foreign = foreign_reason(host, "Strata", port_remedy(settings, "strata_host", strata_config(settings)))
-    if foreign:
-        return foreign
     if engine_process_alive():
         return ("a Strata engine process is already running (still loading, or started elsewhere) — "
                 "wait for it or stop it where it was started; nothing was started.")
+    # After the process check: a Strata still loading holds the port without answering yet, and
+    # must get the "still loading" words, not "held by python.exe" (T1316).
+    foreign = foreign_reason(host, "Strata", port_remedy(settings, "strata_host", strata_config(settings)))
+    if foreign:
+        return foreign
     ram_free, commit_free = memory_free_bytes()
     return memory_refusal(cfg, ram_free=ram_free, commit_free=commit_free, gpu=gpu_memory_mib())
 

@@ -152,6 +152,30 @@ def test_a_foreign_server_on_the_port_is_not_strata_and_every_verb_says_who_is_t
     assert status.startswith("no Strata server at") and "whisper-server.exe" in status and "attached" not in status
 
 
+def test_our_own_engine_still_loading_is_not_reported_as_a_foreign_listener(monkeypatch):
+    """T1316: LiteTUI's spawn holds the port before /health answers; naming that listener 'not
+    Strata' would blame our own loading server. `_starting` covers the load (the handle is only
+    published once it is ready); an alive owned engine covers the rest."""
+    monkeypatch.setattr(strata_engine, "foreign_clause", _REAL_FOREIGN_CLAUSE)
+    monkeypatch.setattr(strata_engine, "port_holder", lambda host: strata_engine.Holder(True, 777, "python.exe"))
+    backend = _backend("http://127.0.0.1:9")            # nothing answers HTTP, a listener holds the port
+    with pytest.raises(BackendError, match=r"python\.exe \(pid 777\)"):
+        asyncio.run(backend.ensure_running())
+    assert "python.exe" in backend.engine_status()
+    backend._starting = True
+    with pytest.raises(BackendError) as loading:
+        asyncio.run(backend.ensure_running())
+    assert "python.exe" not in str(loading.value) and "no Strata server is answering" in str(loading.value)
+    assert "python.exe" not in backend.engine_status()
+    backend._starting = False
+    backend._owned = strata_engine.OwnedEngine(
+        proc=type("P", (), {"pid": 7, "poll": lambda self: None})(), host="http://127.0.0.1:9",
+        log_path="log", log_file=None, model_id="flash", registered=False)
+    with pytest.raises(BackendError) as owned:
+        asyncio.run(backend.ensure_running())
+    assert "python.exe" not in str(owned.value)
+
+
 def test_a_build_without_the_service_field_is_still_strata_when_v1_models_lists_models(server):
     server["service"] = None
     backend = _backend(server["host"])

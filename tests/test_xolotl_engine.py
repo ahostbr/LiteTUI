@@ -242,6 +242,15 @@ def test_a_real_xolotl_is_still_attached_to_and_a_silent_listener_is_named(tmp_p
         eng.start(settings, healthy=lambda host: False, spawn=lambda *a, **k: pytest.fail("spawned"))
 
 
+def test_a_xolotl_still_loading_gets_the_still_loading_words_not_a_foreign_refusal(tmp_path, monkeypatch):
+    settings, _ = _install(tmp_path, "ds41")
+    _foreign_port(monkeypatch, ("silent", None, "no answer to /health"), strata_engine.Holder(True, 555, "python.exe"))
+    monkeypatch.setattr(eng, "engine_process_alive", lambda: True)
+    with pytest.raises(BackendError, match="engine process is already running .*still loading") as exc:
+        eng.start(settings, healthy=lambda host: False, spawn=lambda *a, **k: pytest.fail("spawned"))
+    assert "held by" not in str(exc.value)
+
+
 def test_start_refuses_on_memory_before_spawning(tmp_path, monkeypatch):
     settings, _ = _install(tmp_path, "ds41")
     monkeypatch.setattr(strata_engine, "memory_free_bytes", lambda: (30 * GB, 400 * GB))
