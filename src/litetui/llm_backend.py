@@ -151,6 +151,9 @@ VALUE_FLAGS: dict[str, str] = {
     # section; a per-model value here overrides them.
     "cache_ram": "cache-ram",                     # MiB of host RAM prompt cache
     "slot_similarity": "slot-prompt-similarity",  # LCP share needed to reuse a slot
+    # MoE expert placement (T1341-A4): static host placement, the llama.cpp
+    # counterpart of NInfer's --expert-residency host. Unset = the engine's own.
+    "n_cpu_moe": "n-cpu-moe",                     # MoE weights of the first N layers stay on the CPU
 }
 
 #: Booleans. Written ``ini-key = true/false``; the router emits the
@@ -162,7 +165,15 @@ BOOL_FLAGS: dict[str, str] = {
     "kv_unified": "kv-unified",
     "context_shift": "context-shift",
     "cache_idle_slots": "cache-idle-slots",   # router default: llama_cache_idle_slots
+    "cpu_moe": "cpu-moe",                     # ALL MoE weights on the CPU (no --no- form: see _NO_NEGATIVE_FORM)
+    "mmproj_offload": "mmproj-offload",       # vision projector on the GPU (engine default on)
 }
+
+#: Booleans whose flag has NO ``--no-`` spelling in --help (b9360 and b12078 print only
+#: ``-cmoe, --cpu-moe``). Their off state is the engine default, so ``false`` is
+#: written as nothing rather than as a negation the router might not accept.
+_NO_NEGATIVE_FORM = frozenset({"cpu_moe"})
+
 
 FLAG_FOR: dict[str, str] = {**VALUE_FLAGS, **BOOL_FLAGS}
 
@@ -826,7 +837,7 @@ def render_preset_ini(rows: list[ModelRow], settings, *, load_settings: dict | N
             cfg = {k: v for k, v in cfg.items() if k not in _LOAD_MODE_DEFAULTS}
         for k in sorted(cfg):
             v = cfg[k]
-            if v is None:
+            if v is None or (k in _NO_NEGATIVE_FORM and not v):
                 continue
             ini_key = FLAG_FOR.get(k)
             if ini_key is None or (flags and ini_key not in flags):
