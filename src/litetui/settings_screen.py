@@ -955,6 +955,14 @@ class SettingsBody(Widget):
                             "On moves it to the RAM cache on every new request and copies it back. "
                             "Applies on the router's next start.",
                         )
+                        yield from self._switch_row(
+                            "llama_default_kv_quant", "Default KV cache: q8_0 with flash attention",
+                            "NInfer stores its KV cache as fp8 and Strata as int8; llama.cpp defaults to f16. "
+                            "On gives every model that has no K cache, V cache or Flash Attention setting of its "
+                            "own q8_0 K and V with flash attention on, about half the KV memory for a small "
+                            "quality cost. A model with any of those set keeps its own. "
+                            "Applies on the router's next start.",
+                        )
                         yield self._section_header("model-slot-persist")
                         yield from self._switch_row(
                             "slot_persist_strata", "Strata: keep the prompt cache across restarts",

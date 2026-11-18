@@ -1241,6 +1241,14 @@ class ModelConfigBody(Widget):
                                             "for a GGUF with nextn heads when no draft setting is chosen. "
                                             "Off suppresses all draft flags. "
                                             "MTP ignores the external path; needs binary support and GGUF nextn heads.")
+                            if (key in ("cache_k", "cache_v", "flash_attn") and on_llama and not missing
+                                    and getattr(app.settings, "llama_default_kv_quant", False)
+                                    and all(load_cfg.get(k) is None
+                                            for k in ("cache_k", "cache_v", "flash_attn"))):
+                                note = note or (
+                                    "all three unset: LiteTUI uses q8_0 K and V with flash attention on "
+                                    "(Settings, Prompt cache). Set any of the three to choose your own."
+                                )
                             if (key == "mmproj" and not missing and editable
                                     and llm_backend.is_no_projector(
                                         load_cfg.get("mmproj"))):

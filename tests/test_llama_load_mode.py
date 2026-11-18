@@ -34,6 +34,8 @@ def _render(monkeypatch, flags, profiles: dict, keys="abcd") -> str:
     monkeypatch.setattr(llm_backend, "installed_flags", lambda *a: flags)
     s = Settings()
     s.llama_load_settings = profiles
+    # T1341-A3: the default KV quantisation is a separate concern; this file pins load-mode output.
+    s.llama_default_kv_quant = False
     return render_preset_ini([ModelRow(k, f"C:/m/{k}.gguf", "custom") for k in keys], s)
 
 

@@ -375,6 +375,12 @@ class Settings:
     #: --cache-idle-slots. Off keeps an idle conversation in VRAM while another
     #: slot runs, instead of moving it to the RAM cache on every new task.
     llama_cache_idle_slots: bool = False
+    #: T1341-A3. NInfer stores KV as fp8 and Strata as int8; llama.cpp's own default is f16.
+    #: On: a model whose Load settings carry NONE of K cache, V cache or Flash Attention gets
+    #: q8_0 K + q8_0 V with flash-attn on (llm_backend._default_kv_quant). A model with any of
+    #: the three set keeps exactly what it has. Lossy (8-bit KV), roughly half the KV memory,
+    #: so a model that must stay f16 either sets its own cache types or this goes off.
+    llama_default_kv_quant: bool = True
     #: Per-model Load-tab overrides {model_key: {"ctx": …, "ngl": …, ...}} —
     #: key vocabulary is llm_backend.FLAG_FOR, edited via /modelcfg.
     llama_load_settings: dict = field(default_factory=dict)

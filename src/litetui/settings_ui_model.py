@@ -137,6 +137,7 @@ FIELD_DESCRIPTIONS = {
     "llama_cache_ram_mib": "MiB of system RAM our llama.cpp router keeps for saved conversations; applies on its next start.",
     "llama_slot_prompt_similarity": "How much of a request must match a slot's conversation to reuse it; 0.5 keeps short side calls out.",
     "llama_cache_idle_slots": "Off keeps an idle conversation in GPU memory while another request runs; applies on the router's next start.",
+    "llama_default_kv_quant": "On gives a model with no K cache, V cache or Flash Attention setting q8_0 K and V with flash attention on; applies on the router's next start.",
     "slot_persist_strata": "Save Strata's conversation cache when LiteTUI stops the engine it started, and restore it on the next start.",
     "slot_persist_llama": "The same for LiteTUI's llama.cpp router; off because b9360 cannot usefully restore vision or Qwen3.5/3.8 models.",
     "slot_persist_dir": "Folder for saved conversation caches; blank uses .slot-saves in LiteTUI's data folder.",
@@ -357,8 +358,8 @@ SETTINGS_SECTIONS: tuple[SettingsSectionSpec, ...] = (
     _section(
         "model", "Model", "model-prompt-cache", "Prompt cache",
         "How our llama.cpp router keeps a conversation through side calls.",
-        ("llama_cache_ram_mib", "llama_slot_prompt_similarity", "llama_cache_idle_slots"), scope="device",
-        keywords=("cache", "prefix", "slot", "similarity", "RAM", "idle"),
+        ("llama_cache_ram_mib", "llama_slot_prompt_similarity", "llama_cache_idle_slots", "llama_default_kv_quant"), scope="device",
+        keywords=("cache", "prefix", "slot", "similarity", "RAM", "idle", "KV", "q8_0", "quantisation", "flash"),
     ),
     _section(
         "model", "Model", "model-slot-persist", "Prompt cache across restarts",

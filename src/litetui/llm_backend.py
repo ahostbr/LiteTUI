@@ -859,6 +859,7 @@ def render_preset_ini(rows: list[ModelRow], settings, *, load_settings: dict | N
             auto, _found = sibling_mmproj(row.path)
             if auto:
                 cfg = {**cfg, "mmproj": auto}
+        cfg = _default_kv_quant(cfg, settings, flags)
         load_mode = None
         if _speaks_load_mode(flags) and any(cfg.get(k) is not None for k in _LOAD_MODE_DEFAULTS):
             chosen = tuple(bool(d if cfg.get(k) is None else cfg[k]) for k, d in _LOAD_MODE_DEFAULTS.items())
@@ -876,6 +877,28 @@ def render_preset_ini(rows: list[ModelRow], settings, *, load_settings: dict | N
             lines.append(f"load-mode = {load_mode}")
         lines.append("")
     return "\n".join(lines)
+
+
+#: T1341-A3: the three keys that decide a model's KV storage. ANY of them set (even to the
+#: engine default) means the user chose, and the model keeps exactly what it has.
+_KV_QUANT_KEYS = ("cache_k", "cache_v", "flash_attn")
+
+
+def _default_kv_quant(cfg: dict, settings, flags) -> dict:
+    """q8_0 K + q8_0 V with flash-attn on, for a model whose Load settings carry none of the three.
+
+    NInfer stores KV as fp8 and Strata as int8; llama.cpp defaults to f16 (b12078 help l.75-81).
+    A quantised V cache needs flash attention, so the three go together. Census-gated: a build
+    that does not list all three flags gets nothing (an empty census proves nothing), and a
+    settings object without the field means "not set". Lossy by design, hence the setting.
+    """
+    if not getattr(settings, "llama_default_kv_quant", False):
+        return cfg
+    if any(cfg.get(k) is not None for k in _KV_QUANT_KEYS):
+        return cfg
+    if not {FLAG_FOR[k] for k in _KV_QUANT_KEYS} <= flags:
+        return cfg
+    return {**cfg, "cache_k": "q8_0", "cache_v": "q8_0", "flash_attn": "on"}
 
 
 def _ini_line(key: str, value) -> str:

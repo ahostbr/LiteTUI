@@ -36,6 +36,7 @@ def _pinned(monkeypatch):
 def _render(monkeypatch, flags, cfg: dict) -> str:
     monkeypatch.setattr(llm_backend, "installed_flags", lambda *a: flags)
     s = Settings()
+    s.llama_default_kv_quant = False  # T1341-A3 is a separate concern; this file pins the MoE keys
     s.llama_load_settings = {"m": cfg} if cfg is not None else {}
     return render_preset_ini([ModelRow("m", "C:/m/m.gguf", "custom")], s)
 
