@@ -701,6 +701,35 @@ def mmproj_candidates(settings) -> list[str]:
 _DRAFT_KEYS = ("draft_model", "draft_max", "draft_min", "draft_p_min")
 
 
+def _auto_embedded_mtp(out: dict, path: str | None, settings) -> dict:
+    """T1341-A2: embedded MTP is ON when the user has chosen nothing.
+
+    NInfer enables MTP on its own for a model that carries a drafter, and Strata runs
+    ``--spec 4 --mtp`` from its config (~72% of drafts accepted in its log); llama.cpp's
+    ``--spec-type`` defaults to none, so an MTP GGUF ran WITHOUT its heads here.
+
+    Only when ALL hold, and otherwise ``out`` is returned untouched (this never refuses and
+    never raises: nothing was asked for, so nothing may fail):
+      * ``spec_type`` is unset. ``none`` is an explicit Off and is honoured by the caller;
+      * no draft key is set (a legacy external-draft profile keeps its meaning);
+      * the build's census lists ``--spec-type`` with ``draft-mtp`` and the three draft flags;
+      * the GGUF header carries a positive integer ``<arch>.nextn_predict_layers``.
+    """
+    if not path or any(k in out for k in _DRAFT_KEYS):
+        return out
+    flags = configured_flags(settings)
+    needed = {"spec-type", "spec-draft-n-max", "spec-draft-n-min", "spec-draft-p-min"}
+    if not needed <= flags or "draft-mtp" not in configured_spec_types(settings):
+        return out
+    layers = gguf_metadata(path)[1]
+    if type(layers) is not int or layers <= 0:
+        return out
+    auto = {**out, "spec_type": "draft-mtp"}
+    for k, default in (("draft_max", 3), ("draft_min", 0), ("draft_p_min", 0)):
+        auto.setdefault(k, default)
+    return auto
+
+
 def resolve_speculation(key: str, path: str | None, cfg: dict, settings) -> dict:
     """Validate explicit speculation and return effective (not stored) settings.
 
@@ -719,7 +748,7 @@ def resolve_speculation(key: str, path: str | None, cfg: dict, settings) -> dict
             out[k] = value.strip()
     mode = out.get("spec_type")
     if mode is None:
-        return out
+        return _auto_embedded_mtp(out, path, settings)
 
     def refuse(reason):
         raise BackendError(f"{key}: speculative decoding — {reason}")

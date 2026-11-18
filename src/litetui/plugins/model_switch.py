@@ -1237,7 +1237,9 @@ class ModelConfigBody(Widget):
                                     extra.append((f"{current} (unavailable; change or clear)", current))
                                 missing = False  # keep recovery to unset/Off available
                                 if on_llama:
-                                    note = ("Unset preserves legacy draft settings. Off suppresses all draft flags. "
+                                    note = ("Unset keeps legacy draft settings, and turns embedded MTP on by itself "
+                                            "for a GGUF with nextn heads when no draft setting is chosen. "
+                                            "Off suppresses all draft flags. "
                                             "MTP ignores the external path; needs binary support and GGUF nextn heads.")
                             if (key == "mmproj" and not missing and editable
                                     and llm_backend.is_no_projector(
