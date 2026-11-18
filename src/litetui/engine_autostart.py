@@ -49,7 +49,54 @@ def should_hold(app, source: str) -> bool:
     in flight that nothing in this app is waiting on (Prefix review cda5cb84)."""
     if waiting(app):
         return True
-    return nothing_serving(app) and at_keyboard(app, source)
+    return nothing_serving(app) and at_keyboard(app, source) and declined_words(app, source) is None
+
+
+# -- a start that fails the same way every time (T1338) ----------------------------------------
+#
+# Measured: a model with --max-context 150000 --max-concurrency 2 needed 7.2 GiB more VRAM than the
+# card had, and every send started it again: five spawns in six minutes, five identical failures,
+# each loading 20.8 GiB of weights to find out. A start that failed for a reason the same
+# settings will hit again is remembered with those settings; a send under the SAME settings says so
+# instead of spawning. A different setting, or an explicit /engine start, tries again.
+
+_KEY_FIELDS = ("ninfer_executable", "ninfer_artifact", "ninfer_max_context", "ninfer_max_concurrency",
+               "ninfer_kv_dtype", "ninfer_kv_capacity", "ninfer_host_kv_mib", "ninfer_speed_preset")
+
+
+def settings_key(app) -> tuple:
+    """What a start would run with: the engine's name and every setting that changes its argv."""
+    backend = getattr(app, "backend", None)
+    s = getattr(backend, "_settings", None) or getattr(app, "settings", None)
+    return (getattr(backend, "name", ""), *(str(getattr(s, field, None)) for field in _KEY_FIELDS))
+
+
+def remember_failure(app, error) -> None:
+    """Record a start that failed for a reason these settings will repeat; forget it otherwise."""
+    reason = getattr(error, "reason", None)
+    app._engine_start_blocked = (settings_key(app), str(error)) if reason else None
+
+
+def forget_failure(app) -> None:
+    app._engine_start_blocked = None
+
+
+def declined_words(app, source: str) -> str | None:
+    """The sentence to show INSTEAD of starting, or None. Only a person's send is declined, and
+    only while nothing serves and the settings are the ones that failed."""
+    blocked = getattr(app, "_engine_start_blocked", None)
+    if not blocked or blocked[0] != settings_key(app):
+        return None
+    if waiting(app) or not (nothing_serving(app) and at_keyboard(app, source)):
+        return None
+    return (f"{blocked[1]} Not starting it again with the same settings: change them, "
+            "or /engine start to try anyway.")
+
+
+def decline(app, item: dict, words: str) -> None:
+    """Say why nothing started, and give the message back."""
+    app.system_message(words)
+    give_back(app, [item], queued=False)
 
 
 def begin(app) -> None:
@@ -142,15 +189,17 @@ async def run(app, backend) -> None:
         settle(app, backend)
 
 
-def give_back(app, held: list[dict]) -> None:
+def give_back(app, held: list[dict], *, queued: bool = True) -> None:
     """A start that did not serve: take the held messages off the queue (so nothing sends them
-    to an engine that is not there) and put their text back in the input box."""
+    to an engine that is not there) and put their text back in the input box. `queued=False`:
+    the messages never reached the queue (a send declined before it), so there is nothing to remove."""
     texts = []
     for item in held:
-        try:
-            app._pending_input.remove(item)
-        except ValueError:
-            continue                        # already sent or dropped elsewhere
+        if queued:
+            try:
+                app._pending_input.remove(item)
+            except ValueError:
+                continue                    # already sent or dropped elsewhere
         bubble = item.get("bubble")
         if bubble is not None:
             try:

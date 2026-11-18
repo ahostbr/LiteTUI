@@ -369,7 +369,7 @@ def _register(ctx) -> None:
     ctx.command(
         ("/test-sidebar",), _cmd_test_sidebar,
         palette="Test sidebar dialog",
-        help="T075 spike: open a demo dialog in the current Dialog style.",
+        help="Open a demo dialog in the current Dialog style.",
         group="app",
         order=31,
     )

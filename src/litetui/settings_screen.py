@@ -1016,8 +1016,8 @@ class SettingsBody(Widget):
                             yield from self._select_row(
                                 "ninfer_speed_preset", "NInfer: speed preset (DeepSeek recipes)",
                                 [(p.label, p.key) for p in ninfer_engine.SPEED_PRESETS.values()],
-                                "Sets the expert tier (--expert-host-mib) and --prefill-chunk of the model's launch recipe. Measured on the RTX 5090, "
-                                "first token on a cold prompt: old build 83K = 405 s. Fastest: 32K = 17-21 s, 83K = 60-71 s, RAM ~80%, decode 45-49 tok/s. "
+                                "Sets the expert tier (--expert-host-mib) and --prefill-chunk of the model's launch recipe. Measured on an RTX 5090, "
+                                "first token on a cold prompt. Fastest: 32K = 17-21 s, 83K = 60-71 s, RAM ~80%, decode 45-49 tok/s. "
                                 "Fast: 32K = 20-21 s, 83K = 51 s, RAM ~63%. Standard: 32K = 24 s, 83K = 54 s, RAM ~63%. Runs vary by about 25%. "
                                 "Fastest needs 70 GiB of free RAM at launch and drops to Fast when it is not free. Applies on the next /engine start.",
                             )
@@ -1382,7 +1382,7 @@ class SettingsBody(Widget):
                             "relay_approval_timeout_s", "Spawner approval wait (seconds)",
                             "A LiteTUI launched by an agent asks THAT agent, by inbox, "
                             "before a sensitive action. With no answer in this many "
-                            "seconds the turn stops and the refusal is logged (T1049).",
+                            "seconds the turn stops and the refusal is logged.",
                             placeholder="600",
                         )
                         yield from self._text_row(
@@ -1613,7 +1613,7 @@ class SettingsBody(Widget):
                             "covering the chat, so you can still read the message that "
                             "provoked a tool call while you decide. They still BLOCK — "
                             "obscuring and blocking are separate things and only the "
-                            "first changes. T075 spike: /test-sidebar honours this; the "
+                            "first changes. /test-sidebar honours this; the "
                             "existing dialogs do not yet.",
                         )
                         yield from self._select_row(

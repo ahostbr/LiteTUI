@@ -281,5 +281,5 @@ def stop_line(app, name: str, status: str) -> str:
                    f"or the harness is off); {name} was not run; refused and logged]"),
         "no_spawner": (f"[stopped — an agent launched this LiteTUI without naming itself "
                        f"(LITETUI_SPAWN_IDENTITY=1 + {SPAWNED_BY_ENV}), so nobody can approve "
-                       f"{name}; refused and logged (T1049)]"),
+                       f"{name}; refused and logged]"),
     }[status]

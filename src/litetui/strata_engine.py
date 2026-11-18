@@ -37,7 +37,7 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
-from . import jobkill, ninfer_engine, prefix_persist, strata_options, ttyguard
+from . import engine_words, jobkill, ninfer_engine, prefix_persist, strata_options, ttyguard
 from .llm_backend import BackendError, _arg_value
 from .ninfer_engine import EngineStartFailed, OwnedEngine
 
@@ -496,7 +496,7 @@ def _last_words(fresh: str, limit: int = 400) -> str:
     """The END of what this spawn printed. `ninfer_engine._log_tail` keeps the first 400
     characters of the last five lines, and here those begin with the spawn header — a long
     install path pushed the engine's own reason off the end."""
-    return " ".join(fresh.strip().splitlines()[-3:])[-limit:] or "(it printed nothing)"
+    return engine_words.clean_tail(fresh, lines=3, limit=limit)   # T1339: no timestamps, no INFO lines
 
 
 def start(settings, *, healthy, spawn=ttyguard.popen, notice=None, progress=None,

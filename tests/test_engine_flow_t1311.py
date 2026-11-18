@@ -494,8 +494,9 @@ def test_a_send_with_nothing_serving_starts_the_engine_and_sends_once_ready(box,
     assert starts == [box.settings.ninfer_artifact]                   # ONE start for both
     assert app.sent == ["hello"], app.sent                            # first goes now; the rest on turn end
     assert [i["text"] for i in app._pending_input] == ["and a second one"]
-    assert any("NInfer: loading weights 50.0%" in s for s in app.said), app.said
-    assert any("NInfer: engine ready" in s for s in app.said)
+    # T1339: a status, not the engine's own log line.
+    assert any("NInfer: Loading weights 50.0% (27.2 of 54.4 GiB)" in s for s in app.said), app.said
+    assert any("NInfer: Ready" in s for s in app.said)
     assert not app._engine_autostart
 
 

@@ -83,7 +83,7 @@ def main() -> None:
         type=str,
         default=None,
         choices=["normal", "plan"],
-        help="plan: load ls-plan-w-quizmaster and ask through ask_user_question (T558)",
+        help="plan: load ls-plan-w-quizmaster and ask through ask_user_question",
     )
     agent_selection = parser.add_mutually_exclusive_group()
     agent_selection.add_argument("--agent", type=str, default=None, help="select authoritative named agent folder")

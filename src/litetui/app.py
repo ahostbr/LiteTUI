@@ -8802,6 +8802,11 @@ class LiteTUI(App):
         correlation = {"operation_id": getattr(self, "_gui_next_operation_id", None)} if source == "rpc" else {}
         correlation.update(claude_metadata)
         from litetui import engine_autostart
+        declined = engine_autostart.declined_words(self, source)
+        if declined:
+            # T1338: the last start failed for a reason these same settings will repeat.
+            engine_autostart.decline(self, {"content": content, "text": text}, declined)
+            return
         if engine_autostart.should_hold(self, source):
             # T1311 (Ryan: "Send auto-starts"): nothing is serving, so a person's send
             # starts the chosen engine and goes once it has loaded. Same queue as below.

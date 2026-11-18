@@ -260,7 +260,7 @@ def test_F3_the_removed_scheduled_level_runs_interactive_and_is_named_once():
     assert pending[0]["tool_profile"] == INTERACTIVE
     seat.cron = SimpleNamespace(jobs=[job])
     cron.say_retired_levels(seat)
-    assert said == [f"/cron: {job.id} recorded the removed level 'scheduled'; it now runs interactive (T1082)."]
+    assert said == [f"/cron: {job.id} recorded the removed level 'scheduled'; it now runs interactive."]
 
 
 def test_S1_a_skipping_seat_never_takes_the_scheduler_lease(monkeypatch):

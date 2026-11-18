@@ -24,7 +24,7 @@ def capture_launch(app, request):
     from litetui import seat_authority
     if profile != 'autonomous' and seat_authority.confirm_route(app) == 'refuse':
         raise LaunchBlocked("No approval path for the child's confirms: this LiteTUI was launched "
-                            'by an agent without LITETUI_SPAWN_IDENTITY + LITEHARNESS_SPAWNED_BY (T1049)')
+                            'by an agent without LITETUI_SPAWN_IDENTITY + LITEHARNESS_SPAWNED_BY')
     if hasattr(app.backend, 'app_server'):
         raise LaunchBlocked('Native app-server parent result delivery is not integrated')
     from litetui import hook_host

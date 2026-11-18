@@ -41,7 +41,7 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
-from . import jobkill, ttyguard
+from . import engine_words, jobkill, ttyguard
 from .llm_backend import BackendError, _arg_value
 from .shared_state import Lease  # OwnershipError is an OSError subclass — caught by the writers below
 
@@ -62,9 +62,12 @@ class EngineStartFailed(BackendError):
     publish it and retry the stop; it is None when the cleanup was confirmed (nothing left
     to own). A BackendError subclass, so existing ``except BackendError`` paths still catch."""
 
-    def __init__(self, message: str, *, retained_owned=None) -> None:
+    def __init__(self, message: str, *, retained_owned=None, reason: str | None = None) -> None:
         super().__init__(message)
         self.retained_owned = retained_owned
+        #: Set (engine_words.REASON_*) when the same settings will fail the same way again, so
+        #: nothing starts them unchanged a second time (T1338).
+        self.reason = reason
 
 NINFER_V3_MAGIC = b"NINFER\x00\x03"
 NINFER_V3_HEADER_BYTES = 32
@@ -1072,7 +1075,7 @@ def start(settings, *, healthy, spawn=ttyguard.popen, notice=None, progress=None
             job = None
     owned = OwnedEngine(proc=proc, host=host, log_path=lp, log_file=log_file,
                         model_id=model_id, job=job, args=tuple(args))
-    outcome, _fresh = wait_for_ready(lp, start_off, proc, host, healthy=healthy,
+    outcome, fresh = wait_for_ready(lp, start_off, proc, host, healthy=healthy,
                                      ready_marker=NINFER_READY_MARKER, stall_s=NINFER_START_TIMEOUT_S,
                                      interval=0.5, failure_markers=NINFER_FAILURE_MARKERS,
                                      cancel=cancel, progress=progress)
@@ -1083,12 +1086,18 @@ def start(settings, *, healthy, spawn=ttyguard.popen, notice=None, progress=None
     if outcome == "cancelled":
         _log_event(START_CANCELLED)
         _fail_start(owned, START_CANCELLED)
-    if outcome.startswith("failed:"):
-        _fail_start(owned, f"ninfer-serve failed to start: {outcome[7:]} — {_log_tail(lp)}")
-    if outcome == "exited":
-        _fail_start(owned, f"ninfer-serve exited before it was ready — {_log_tail(lp)}")
+    # T1338/T1339: the user reads ONE plain sentence from the engine's ERROR lines. The raw
+    # lines (timestamps, device profile, byte counts) stay in the log file.
+    if outcome.startswith("failed:") or outcome == "exited":
+        said, reason = engine_words.explain_failure(fresh, args)
+        if reason is None:
+            if outcome.startswith("failed:") and not engine_words.error_lines(fresh):
+                said = outcome[7:]          # the marker is the only reason the engine gave
+            said = f"ninfer-serve could not start: {said}. Engine log: {lp}"
+        _log_event(f"start failed ({outcome}): {said}")
+        _fail_start(owned, said, reason=reason)
     _fail_start(owned, f"ninfer-serve did not become ready: it printed nothing new for "
-                       f"{NINFER_START_TIMEOUT_S}s — {_log_tail(lp)}")
+                       f"{NINFER_START_TIMEOUT_S}s. Engine log: {lp}")
 
 
 def _progress_key(line: str):
@@ -1340,7 +1349,7 @@ def _remove_entry(host, pid) -> bool:
     return True
 
 
-def _fail_start(owned, message):
+def _fail_start(owned, message, *, reason=None):
     """A start that failed but left a RESIDENT engine (weights load before the port binds).
 
     The retained OwnedEngine HANDLE is the real ownership — NOT a registry row. We do NOT
@@ -1354,14 +1363,14 @@ def _fail_start(owned, message):
     try:
         result = terminate_owned(owned)
     except Exception:  # noqa: BLE001 - any unexpected cleanup failure must still surface the handle
-        raise EngineStartFailed(message, retained_owned=owned)
+        raise EngineStartFailed(message, retained_owned=owned, reason=reason)
     finally:
         # LiteTUI's OWN handle to the log must not leak on a failed start. The child keeps
         # writing through its own handle (independent on Windows) and _log_tail reads from
         # disk, so closing ours is safe whether we retain the engine for a retry or not.
         # (On the confirmed path _terminate_owned_inner already closed it; _close_log no-ops.)
         _close_log(owned)
-    raise EngineStartFailed(message, retained_owned=(owned if result.retained else None))
+    raise EngineStartFailed(message, retained_owned=(owned if result.retained else None), reason=reason)
 
 
 def stop(owned: OwnedEngine) -> None:

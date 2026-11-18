@@ -37,7 +37,7 @@ EXTRA_FIELD = "strata_extra_args"
 #: strata-uncensored_iq3_xxs.log): `expert cache auto: 24.64 GiB free, 1082 MiB reserved (+184 MiB
 #: for the draft head) -> 11547 slots`, then `688 MiB of VRAM free with everything loaded`, and 480-783
 #: MiB free while it ran. The cache took about 23 GiB.
-_MEASURED = ("Measured here (RTX 5090, Uncensored IQ3_XXS): reserve 1082 MiB gave 11,547 cache slots "
+_MEASURED = ("Measured on an RTX 5090 (Uncensored IQ3_XXS): reserve 1082 MiB gave 11,547 cache slots "
              "(about 23 GiB) and left 480-783 MiB free once loaded.")
 
 

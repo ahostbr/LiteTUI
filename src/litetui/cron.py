@@ -273,7 +273,7 @@ def say_retired_levels(app) -> None:
     for job in app.cron.jobs:
         if sched_mod.level_of(job.tool_profile) != job.tool_profile:
             app._system(f"/cron: {job.id} recorded the removed level {job.tool_profile!r}; "
-                        "it now runs interactive (T1082).")
+                        "it now runs interactive.")
 
 
 @work(exclusive=True, group="cron")

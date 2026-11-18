@@ -35,6 +35,7 @@ from textual.widgets import Input, Label, Select, Static, Switch, TabbedContent,
 from litetui import settings_runtime
 from litetui import cline_backend
 from litetui import context_choice
+from litetui import engine_autostart, engine_words
 from litetui import free_tier
 from litetui import llm_backend
 from litetui import model_transport
@@ -524,8 +525,6 @@ async def start_and_connect(app, backend) -> bool:
     (`engine_autostart.begin`) and is sent or given back when it settles — never a second
     start (Prefix review cda5cb84).
     """
-    from litetui import engine_autostart
-
     engine_autostart.begin(app)
     try:
         return await _start_then_reconnect(app, backend)
@@ -541,13 +540,17 @@ async def _start_then_reconnect(app, backend) -> bool:
 
     def _progress(line: str) -> None:
         # Sentinel's constraint for T1311: show the weight load (Edge0 reads 58 GB).
-        app.call_from_thread(app.system_message, f"{getattr(backend, 'label', 'engine')}: {line}")
+        # T1339: a status ("Loading weights 20.8 GiB"), not the engine's own log line.
+        app.call_from_thread(app.system_message,
+                             f"{getattr(backend, 'label', 'engine')}: {engine_words.plain_progress(line)}")
 
     try:
         msg = await backend.start_engine(notice=_starting, progress=_progress)
     except llm_backend.BackendError as e:
+        engine_autostart.remember_failure(app, e)      # T1338: a repeat of this exact start is declined
         app.system_message(str(e))
         return False
+    engine_autostart.forget_failure(app)
     app.system_message(msg)
     await await_reconnect(app.connect())
     return True
