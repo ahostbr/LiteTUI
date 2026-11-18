@@ -1228,6 +1228,8 @@ class ModelConfigBody(Widget):
                                     extra.append(("Off", "none"))
                                 if "spec-type" in flags and "draft-simple" in modes and "spec-draft-model" in flags:
                                     extra.append(("External draft", "draft-simple"))
+                                if "spec-type" in flags and "ngram-mod" in modes:
+                                    extra.append(("N-gram lookup (opt-in)", "ngram-mod"))
                                 mtp_flags = {"spec-type", "spec-draft-n-max", "spec-draft-n-min", "spec-draft-p-min"}
                                 eligible = getattr(row, "nextn_predict_layers", None)
                                 if "draft-mtp" in modes and mtp_flags <= flags and type(eligible) is int and eligible > 0:

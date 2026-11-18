@@ -753,13 +753,16 @@ def resolve_speculation(key: str, path: str | None, cfg: dict, settings) -> dict
     def refuse(reason):
         raise BackendError(f"{key}: speculative decoding — {reason}")
 
-    if mode not in ("none", "draft-simple", "draft-mtp"):
+    if mode not in ("none", "draft-simple", "draft-mtp", "ngram-mod"):
         refuse(f"unknown spec_type {mode!r}")
     flags = configured_flags(settings)
-    if mode == "none":
+    if mode in ("none", "ngram-mod"):
+        # ngram-mod (T1341-A5) drafts from the context itself: no draft model, and its own
+        # --spec-ngram-mod-* knobs are not in the Load vocabulary, so the engine's defaults
+        # apply. The draft-model keys mean nothing to it and are dropped, as for Off.
         for k in _DRAFT_KEYS:
             out.pop(k, None)
-        if not flags:
+        if mode == "none" and not flags:
             out.pop("spec_type", None)
             return out
     if "spec-type" not in flags or mode not in configured_spec_types(settings):
