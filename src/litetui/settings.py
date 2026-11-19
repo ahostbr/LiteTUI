@@ -272,6 +272,23 @@ class Settings:
     xolotl_root: str = ""
     xolotl_config: str = ""
     xolotl_max_context: int | None = None
+    #: Basalt (https://github.com/jesdga95/basalt): a Strata fork for RTX 50 cards, Qwen3.8-Flash-Next
+    #: on one GPU plus system RAM. Blank host = loopback port 8091. Blank root = LiteSuite's
+    #: `basaltRoot`, else ~/.litesuite/llm/basalt. Blank config = the ONE .basalt pack that install
+    #: holds (the field keeps Strata's name; here it is a pack file). Context None = 131,072.
+    basalt_host: str = ""
+    basalt_root: str = ""
+    basalt_config: str = ""
+    basalt_max_context: int | None = None
+    #: The load options that matter (basalt_engine.run_config); blank leaves Basalt's default.
+    basalt_kv: str | None = None
+    basalt_vram_reserve_mib: int | None = None
+    basalt_expert_cache: str | None = None
+    basalt_conversation_cache_mib: int | None = None
+    basalt_spec: int | None = None
+    basalt_vision: str | None = None
+    #: Any other Basalt setting, as a JSON object for the model's entry of its config.
+    basalt_extra_settings: str | None = None
 
     # ── Model ────────────────────────────────────────────────────────────────
     #: Selected automatically on connect when present in the served list.
@@ -602,7 +619,7 @@ class Settings:
     #: "custom" is left out: it is any OpenAI-compatible URL, often remote, where
     #: the bigger request is billed and nothing says a cache exists.
     prefix_cache_backends: list[str] = field(
-        default_factory=lambda: ["ninfer", "llamacpp", "strata", "xolotl", "lmstudio"]
+        default_factory=lambda: ["ninfer", "llamacpp", "strata", "xolotl", "basalt", "lmstudio"]
     )
 
     # ── Auto-compaction ──────────────────────────────────────────────────────
@@ -782,6 +799,9 @@ ENV_OVERRIDES: dict[str, str] = {
     "xolotl_host": "LITETUI_XOLOTL_HOST",
     "xolotl_root": "LITETUI_XOLOTL_ROOT",
     "xolotl_config": "LITETUI_XOLOTL_CONFIG",
+    "basalt_host": "LITETUI_BASALT_HOST",
+    "basalt_root": "LITETUI_BASALT_ROOT",
+    "basalt_config": "LITETUI_BASALT_CONFIG",
     "backend": "LITETUI_BACKEND",
     "llama_host": "LITETUI_LLAMA_HOST",
     "tool_iterations": "LM_TOOL_ITERS",

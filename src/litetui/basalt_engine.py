@@ -128,6 +128,77 @@ def context_for(settings) -> int:
     return BASALT_DEFAULT_CONTEXT
 
 
+# ── the load options ────────────────────────────────────────────────────────
+# Ryan, 2026-11-19 (T1355 choice 2): the options that matter for a load, plus a free-text field
+# so nothing is unreachable; Basalt's whole catalog (about 60 settings) is a later card.
+# Each is a `basalt_<name>` setting written into the model's entry of the run config under
+# Basalt's own key (docs/configuration/index.md). Blank leaves Basalt's default, except where
+# `run_config` says LiteTUI has its own.
+
+KV_CHOICES = ("fp16", "int8", "q4_0", "k8v4")
+VISION_CHOICES = ("off", "dynamic", "cpu")
+#: Basalt refuses a smaller reserve on Windows (docs/running.md, memory floors).
+VRAM_RESERVE_FLOOR_MIB = 256
+#: What LiteTUI starts Strata with too (T1306-A): RAM for parked conversations, so a side call
+#: does not cost the main conversation its cache. Basalt's own default is 0 (off).
+DEFAULT_CONVERSATION_CACHE_MIB = 8192
+#: The free-text field: a JSON object of further Basalt settings for the model's entry.
+EXTRA_FIELD = "basalt_extra_settings"
+#: Settings that change what the model writes (docs/precision: "lossy routing flags"). Ryan
+#: (T1355 choice 4): no switches for these; reachable only through the free-text field, and a
+#: start that has one on says so.
+LOSSY_KEYS = ("route-tail-skip", "route-prior", "relaxed-drafting")
+#: Keys the run config owns; the free-text field may not replace them.
+_OWNED_KEYS = ("model", "alias")
+
+
+def extra_settings(settings) -> dict:
+    """The free-text field parsed: a JSON object, or ValueError naming the field."""
+    raw = str(getattr(settings, EXTRA_FIELD, "") or "").strip()
+    if not raw:
+        return {}
+    try:
+        value = json.loads(raw)
+    except ValueError as exc:
+        raise ValueError(f"{EXTRA_FIELD}: not valid JSON ({exc})") from exc
+    if not isinstance(value, dict) or not all(isinstance(k, str) for k in value):
+        raise ValueError(f'{EXTRA_FIELD}: write a JSON object such as {{"prefill": "auto:16384"}}')
+    owned = [k for k in value if k in _OWNED_KEYS]
+    if owned:
+        raise ValueError(f"{EXTRA_FIELD}: {', '.join(owned)} is set by /model, not here")
+    return value
+
+
+def validate(settings) -> None:
+    """ValueError naming the first load option Basalt would refuse, before anything is spawned."""
+    kv = getattr(settings, "basalt_kv", None)
+    if kv and kv not in KV_CHOICES:
+        raise ValueError(f"basalt_kv: choose one of {', '.join(KV_CHOICES)}")
+    vision = getattr(settings, "basalt_vision", None)
+    if vision and vision not in VISION_CHOICES:
+        raise ValueError(f"basalt_vision: choose one of {', '.join(VISION_CHOICES)}")
+    reserve = getattr(settings, "basalt_vram_reserve_mib", None)
+    if reserve is not None and reserve < VRAM_RESERVE_FLOOR_MIB:
+        raise ValueError(f"basalt_vram_reserve_mib: Basalt refuses less than {VRAM_RESERVE_FLOOR_MIB} MiB on Windows")
+    cache = str(getattr(settings, "basalt_expert_cache", "") or "").strip()
+    if cache and cache != "auto" and not (cache.isdigit() and int(cache) > 0):
+        raise ValueError("basalt_expert_cache: write auto or a whole number of expert slots")
+    for name in ("basalt_conversation_cache_mib", "basalt_spec"):
+        value = getattr(settings, name, None)
+        if value is not None and value < 0:
+            raise ValueError(f"{name}: must be zero or more")
+    extra_settings(settings)
+
+
+def lossy_settings(settings) -> list[str]:
+    """The output-changing Basalt settings the free-text field turns on, for the start warning."""
+    try:
+        extra = extra_settings(settings)
+    except ValueError:
+        return []
+    return [key for key in LOSSY_KEYS if extra.get(key) not in (None, False, 0, "")]
+
+
 def run_config(settings, pack: Path, port: int) -> dict:
     """The version 2 config LiteTUI starts Basalt with (docs/configuration/index.md).
 
@@ -135,16 +206,38 @@ def run_config(settings, pack: Path, port: int) -> dict:
     listens on loopback only and treats this machine's requests as remote for image sources
     (`image-remote-only`): it then makes no outbound fetch and reads no file path a request names.
     """
+    try:
+        validate(settings)
+    except ValueError as exc:
+        raise BackendError(f"{exc}; nothing was started.") from exc
     context = context_for(settings)
     if context > BASALT_TRAINED_CONTEXT:
         raise BackendError(
             f"basalt_max_context {context} is past the model's trained {BASALT_TRAINED_CONTEXT} tokens — "
             "that needs RoPE scaling, which LiteTUI does not set for Basalt; nothing was started.")
     model: dict = {"model": str(pack), "alias": model_name(pack), "max-context": context}
-    if context > 8192:
+    kv = getattr(settings, "basalt_kv", None)
+    if kv:
+        model["kv"] = kv
+    elif context > 8192:
         # As strata_engine.with_context: past 8,192 tokens a 16-bit KV cache takes the VRAM the
         # expert cache needs. Basalt's default is fp16.
         model["kv"] = "int8"
+    reserve = getattr(settings, "basalt_vram_reserve_mib", None)
+    if reserve is not None:
+        model["vram-reserve-mib"] = reserve
+    cache = str(getattr(settings, "basalt_expert_cache", "") or "").strip()
+    if cache:
+        model["expert-cache"] = cache if cache == "auto" else int(cache)
+    parked = getattr(settings, "basalt_conversation_cache_mib", None)
+    model["conversation-cache-mib"] = DEFAULT_CONVERSATION_CACHE_MIB if parked is None else parked
+    spec = getattr(settings, "basalt_spec", None)
+    if spec is not None:
+        model["spec"] = spec
+    vision = getattr(settings, "basalt_vision", None)
+    if vision:
+        model["vision"] = vision
+    model.update(extra_settings(settings))
     return {"version": 2, "models": [model],
             "server": {"host": "127.0.0.1", "port": port, "image-remote-only": True}}
 

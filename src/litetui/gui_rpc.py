@@ -56,7 +56,7 @@ OPERATIONS = (
 )
 # These settings are consumed during construction/connection. A saved choice
 # does not become an effective connection merely because a setter returned.
-RECONNECT = frozenset({"lm_host", "ninfer_host", "strata_host", "xolotl_host", "llama_host", "llama_executable", "backend", "default_model", "mcp_enabled", "skills_enabled", "mcp_disabled_servers"})
+RECONNECT = frozenset({"lm_host", "ninfer_host", "strata_host", "xolotl_host", "basalt_host", "llama_host", "llama_executable", "backend", "default_model", "mcp_enabled", "skills_enabled", "mcp_disabled_servers"})
 RESTART = frozenset({"plugins_disabled", "skill_roots"})
 
 
@@ -178,6 +178,8 @@ def _validate(app, patch):
             raise ValueError("strata_host: expected an http(s) server URL, or blank for the install's port")
         if name == "xolotl_host" and value and not value.startswith(("http://", "https://")):
             raise ValueError("xolotl_host: expected an http(s) server URL, or blank for the config's port")
+        if name == "basalt_host" and value and not value.startswith(("http://", "https://")):
+            raise ValueError("basalt_host: expected an http(s) server URL, or blank for port 8091 on this PC")
     candidate = copy.deepcopy(app.settings)
     for name, value in patch.items():
         setattr(candidate, name, value)
@@ -793,7 +795,7 @@ async def _async_dispatch(app, cmd):
         if backend.name not in llm_backend.ENGINE_BACKENDS:
             from litetui import gpu_gate
             # T893: NInfer is never named on a box that is not an RTX 5090 (as /engine's own refusal).
-            engines = "NInfer, Strata or Xolotl" if gpu_gate.is_rtx_5090() else "Strata or Xolotl"
+            engines = "NInfer, Strata, Xolotl or Basalt" if gpu_gate.is_rtx_5090() else "Strata, Xolotl or Basalt"
             raise ValueError(f"engine operations require the {engines} backend")
         action = operation.rsplit(".", 1)[1]
         if action == "status":
@@ -834,7 +836,7 @@ async def _async_dispatch(app, cmd):
             raise ValueError("Connection failed; requested connection settings remain deferred")
         if not hasattr(app, "_gui_effective_settings"):
             app._gui_effective_settings = asdict(app.settings)
-        for name in ("lm_host", "ninfer_host", "strata_host", "xolotl_host", "llama_host", "llama_executable", "backend", "default_model"):
+        for name in ("lm_host", "ninfer_host", "strata_host", "xolotl_host", "basalt_host", "llama_host", "llama_executable", "backend", "default_model"):
             app._gui_effective_settings[name] = getattr(app.settings, name)
         return {"connected": True, "model": app._rpc_model_state(), "settings": _settings(app)}
     if operation in ("gui.models.load", "gui.models.unload", "gui.models.config", "gui.models.configure"):

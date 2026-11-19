@@ -41,11 +41,12 @@ MAIN_KEY = {
     "ninfer": "ninfer_max_context",
     "strata": "strata_max_context",
     "xolotl": "xolotl_max_context",
+    "basalt": "basalt_max_context",
     "custom": "custom_context_length",
 }
 
 #: The engines LiteTUI starts itself: the number applies at the next engine start, not now.
-APPLIES_ON_ENGINE_START = frozenset({"ninfer", "strata", "xolotl"})
+APPLIES_ON_ENGINE_START = frozenset({"ninfer", "strata", "xolotl", "basalt"})
 
 
 def main_key(backend: str) -> str | None:

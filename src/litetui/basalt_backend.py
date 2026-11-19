@@ -28,12 +28,22 @@ class BasaltBackend(StrataBackend):
     _setting_prefix = "basalt"
     _install_where = (f"a release or a build from {basalt_engine.BASALT_REPO_URL} "
                       "(RTX 50 cards, CUDA 13), then basalt_root in /settings")
-    start_notice = ("Starting Basalt — it fills the GPU and pins tens of GB of experts in RAM, which takes "
-                    "most of a minute, and the PC can stall while it does…")
+    _START_NOTICE = ("Starting Basalt — it fills the GPU and pins tens of GB of experts in RAM, which takes "
+                     "most of a minute, and the PC can stall while it does…")
 
     @property
     def _engine(self):
         return basalt_engine
+
+    @property
+    def start_notice(self) -> str:
+        """Said by `/engine start` immediately before the spawn. Names any output-changing setting
+        the free-text field turned on: Basalt prints that warning into a log nobody is reading."""
+        lossy = basalt_engine.lossy_settings(self._settings)
+        if not lossy:
+            return self._START_NOTICE
+        return (f"{self._START_NOTICE} WARNING: {', '.join(lossy)} is on in Basalt's extra settings: "
+                "faster, but it changes what the model writes (Basalt calls these lossy).")
 
     # -- who answers -----------------------------------------------------------
 
