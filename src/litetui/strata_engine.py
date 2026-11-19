@@ -559,6 +559,7 @@ def spawn_server(settings, *, healthy, spawn, notice, label: str, plan, refuse, 
                                                   ready_marker=ready_marker, stall_s=timeout,
                                                   interval=1.0, cancel=cancel, progress=progress)
     if outcome == "ready":
+        write_owner_record(owned, label)      # T1355: what a later seat of this LiteTUI stops it by
         atexit.register(ninfer_engine.stop, owned)
         return owned
     if outcome == "cancelled":
@@ -592,4 +593,130 @@ def terminate_owned(owned):
     """Unload (a short grace), then the shared terminal-shutdown proof (`ninfer_engine.terminate_owned`)."""
     if owned.alive:
         request_unload(owned.host, timeout=STOP_UNLOAD_GRACE_S)
-    return ninfer_engine.terminate_owned(owned)
+    result = ninfer_engine.terminate_owned(owned)
+    if not getattr(result, "retained", True):
+        clear_owner_record(owned.log_path, getattr(owned.proc, "pid", None))
+    return result
+
+
+# -- the record a later seat of this LiteTUI stops the engine by (T1355) -----------------------
+#
+# Ryan, testing Basalt: /engine start, then /agent new in the same window, and the new agent's
+# /engine stop answered "was not started by this LiteTUI". /agent-new continues the window as a
+# NEW process (cli.py); the Popen and the job stay in the thin parent. NInfer keeps a record for
+# this in LiteSuite's config (`ninfer_engine.stop_adopted`, T1311b); the three engines spawned
+# here had none. Theirs sits beside the engine's log in the data folder, so any seat on that
+# folder finds it, and it is trusted only as far as the live process matches it.
+
+OWNER_RECORD = "owned-engine.json"
+
+
+def owner_record_path(log_path) -> Path:
+    return Path(log_path).with_name(OWNER_RECORD)
+
+
+def write_owner_record(owned, label: str) -> None:
+    """Record the engine this session started. Without a readable creation time and exe nothing is
+    written: a pid alone can be reused, and a later seat must never kill on a pid alone."""
+    pid = getattr(owned.proc, "pid", None)
+    identity = ninfer_engine.process_identity(pid) if isinstance(pid, int) else None
+    if not identity:
+        return
+    try:
+        owner_record_path(owned.log_path).write_text(json.dumps({
+            "owner": "litetui", "engine": label, "pid": pid, "host": str(owned.host).rstrip("/"),
+            "model": owned.model_id, **identity}, indent=1), encoding="utf-8")
+    except OSError:
+        pass                    # no record: the engine stays stoppable from the seat that started it
+
+
+def read_owner_record(log_path) -> dict | None:
+    try:
+        rec = json.loads(owner_record_path(log_path).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    return rec if isinstance(rec, dict) and rec.get("owner") == "litetui" else None
+
+
+def clear_owner_record(log_path, pid) -> None:
+    """Remove the record, only while it still names `pid` (a newer engine's record is kept)."""
+    rec = read_owner_record(log_path)
+    if rec is not None and rec.get("pid") == pid:
+        try:
+            owner_record_path(log_path).unlink()
+        except OSError:
+            pass
+
+
+def recorded_engine(log_path, host: str) -> dict | None:
+    """The record of an engine LiteTUI started at `host` from this data folder, or None."""
+    rec = read_owner_record(log_path)
+    return rec if rec is not None and str(rec.get("host") or "").rstrip("/") == str(host).rstrip("/") else None
+
+
+def stop_recorded(log_path, host: str, label: str, *, healthy) -> "ninfer_engine.AdoptOutcome | None":
+    """Stop the engine an EARLIER seat of LiteTUI started at `host` (this window before /agent-new, or
+    another window on the same data folder). None when no record names `host`.
+
+    The same proof as `ninfer_engine.stop_adopted`: the recorded pid must be alive with the recorded
+    creation time and exe, and it or a process under it must listen on the recorded port (a venv's
+    python.exe is a launcher; the server is its child). All match: unload, tree kill, exit proved,
+    record removed. Any one differs: nothing is killed, the record is kept, the reason says which."""
+    rec = recorded_engine(log_path, host)
+    if rec is None:
+        return None
+    out = ninfer_engine.AdoptOutcome
+    pid, base = rec.get("pid"), str(host).rstrip("/")
+    if not isinstance(pid, int) or isinstance(pid, bool) or pid <= 0 or not rec.get("created") or not rec.get("exe"):
+        return out(False, reason="the record has no pid, creation time or exe path")
+    from urllib.parse import urlsplit
+    try:
+        port = urlsplit(base).port
+    except ValueError:
+        port = None
+    if not port:
+        return out(False, reason=f"the record's address {base!r} has no port")
+    try:
+        import psutil
+    except ImportError:
+        return out(False, reason="psutil is not available to read the process")
+    try:
+        proc = psutil.Process(pid)
+        with proc.oneshot():
+            created, exe = proc.create_time(), proc.exe()
+    except psutil.NoSuchProcess:
+        if healthy(base):
+            return out(False, reason=f"pid {pid} no longer exists, but something answers at {base}")
+        clear_owner_record(log_path, pid)
+        return out(True, f"the {label} server LiteTUI started at {base} (pid {pid}) has already exited; its record is cleared.")
+    except psutil.AccessDenied:
+        return out(False, reason=f"access to pid {pid} was denied")
+    if abs(created - float(rec["created"])) > ninfer_engine._CREATED_TOLERANCE_S:
+        return out(False, reason=f"pid {pid}'s creation time differs from the record: the pid was reused")
+    if not ninfer_engine._same_exe(exe, str(rec["exe"])):
+        return out(False, reason=f"pid {pid} runs {exe}, not the recorded {rec['exe']}: the pid was reused")
+    try:
+        children = proc.children(recursive=True)
+    except psutil.Error:
+        children = []
+    listening: set[int] = set()
+    for member in (proc, *children):
+        listening |= ninfer_engine._listening_ports(member) or set()
+    if port not in listening:
+        return out(False, reason=f"neither pid {pid} nor a process under it is listening on port {port}")
+    _log_event(f"stopping the {label} server an earlier seat started at {base} "
+               f"(pid {pid}: creation time, exe and port match)", lambda: Path(log_path))
+    request_unload(base, timeout=STOP_UNLOAD_GRACE_S)        # let it free its pinned RAM itself first
+    try:
+        ttyguard.run(["taskkill", "/T", "/F", "/PID", str(pid)], timeout=15)
+    except (OSError, subprocess.TimeoutExpired):
+        pass
+    _gone, alive = psutil.wait_procs([proc, *children], timeout=ninfer_engine._ADOPT_EXIT_WAIT_S)
+    if proc in alive:
+        return out(False, reason=f"pid {pid} matched and was sent a tree kill, but its exit was NOT confirmed")
+    clear_owner_record(log_path, pid)
+    left = [p.pid for p in alive]
+    tail = (f"{len(left)} process(es) under it are still running: {', '.join(map(str, left))}." if left
+            else f"it and its {len(children)} child process(es) are confirmed gone.")
+    return out(True, f"stopped the {label} server LiteTUI started at {base} (pid {pid}, from an earlier seat "
+                     f"of this LiteTUI) — {tail}")
