@@ -61,9 +61,11 @@ def apply_patch(app, payload: dict) -> dict:
         raise ValueError("Invalid cache confirmation")
     if not isinstance(changes, list) or not 1 <= len(changes) <= MAX_CHANGES:
         raise ValueError("Invalid settings patch count")
-    if not isinstance(expected, dict) or set(expected) != {"global", "conversation"} or not all(
-        isinstance(value, str) for value in expected.values()
-    ):
+    # An owned seat's snapshot also carries the agent home's revision (settings_service.snapshot,
+    # e52007fe); requiring exactly two keys refused every save from such a seat (T1354). Which keys
+    # must be present is decided by the comparison with the fresh snapshot below.
+    if not isinstance(expected, dict) or not {"global", "conversation"} <= set(expected) <= {
+            "global", "conversation", "agent"} or not all(isinstance(value, str) for value in expected.values()):
         raise ValueError("Invalid settings revisions")
     directory = getattr(app, "convo_dir", None)
     if directory is None:

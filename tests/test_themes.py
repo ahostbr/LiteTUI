@@ -60,7 +60,8 @@ def test_watch_theme_persists_a_change(monkeypatch):
     from litetui import settings as settings_mod
     saved = []
     monkeypatch.setattr(settings_mod, "save", lambda st: saved.append(st.theme_name))
-    ns = SimpleNamespace(settings=SimpleNamespace(theme_name="textual-dark"))
+    # A real Settings: the save path records what it wrote with dataclasses.asdict (settings_runtime.persist_settings).
+    ns = SimpleNamespace(settings=settings_mod.Settings(theme_name="textual-dark"))
     LiteTUI.watch_theme(ns, "matrix")
     assert saved == ["matrix"]
     assert ns.settings.theme_name == "matrix"
