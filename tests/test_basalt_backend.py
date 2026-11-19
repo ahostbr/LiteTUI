@@ -202,6 +202,62 @@ def test_the_thinking_budget_is_stratas_settings_number_scaled_by_level():
     assert turn_engine.level_budget("custom", 16384, "low") == 16384        # not a backend that scales
 
 
+def _chat(backend_name, level, **more):
+    return turn_engine.TurnEngine.chat_request(
+        model_id=MODEL, messages=[], tools_enabled=True, max_tokens_tools=16384, max_tokens_chat=4096,
+        request_overrides={}, thinking_level=level, tools=[], backend_name=backend_name, thinking_budget=16384, **more)
+
+
+def test_a_basalt_request_gets_the_thinking_room_but_not_the_budget_key():
+    """Basalt 0.4.1 takes a request's thinking budget as the cap of the WHOLE reply: Ryan's test ended at 16,384
+    tokens with a `write` call cut mid-arguments, where the request asked for 32,768."""
+    for level, room in (("xhigh", 16384), ("low", 4096)):
+        basalt, strata = _chat("basalt", level), _chat("strata", level)
+        assert basalt["max_tokens"] == strata["max_tokens"] == 16384 + room      # the same total as Strata
+        assert strata["extra_body"]["reasoning_budget_tokens"] == room
+        assert "reasoning_budget_tokens" not in basalt["extra_body"]
+        assert basalt["extra_body"]["reasoning_effort"] == level                 # the level still goes
+    off = _chat("basalt", "off")
+    assert off["max_tokens"] == 16384 and off["extra_body"] == {"reasoning_effort": "none"}
+    compact = turn_engine.TurnEngine.compact_request(
+        model_id=MODEL, messages=[], max_tokens=12288, thinking_level="xhigh", tools_enabled=True,
+        backend_name="basalt", thinking_budget=16384)
+    assert compact["max_tokens"] == 12288 + 16384
+    assert "reasoning_budget_tokens" not in (compact.get("extra_body") or {})
+
+
+# ── a tool call cut off at the output limit ──────────────────────────────────
+
+def test_a_cut_off_call_is_named_as_that_and_other_bad_arguments_keep_their_words():
+    cut = '{"path": "lamp.py", "content": "import pygame\\n'
+    error = turn_engine.tool_arguments_error(cut)
+    assert error.startswith("Unterminated string") and turn_engine.tool_arguments_error('{"a": 1}') is None
+    assert turn_engine.tool_arguments_error("") is None and turn_engine.tool_arguments_error("[1]") == "arguments must be a JSON object"
+    said = turn_engine.unusable_tool_call_result("write", error, finish_reason="length", completion_tokens=16384, size=len(cut))
+    assert said.startswith("[error] the write call was cut off: the reply reached its output limit (16,384 tokens)")
+    assert "Nothing was run" in said and "write a first part" in said and "Unterminated" not in said
+    plain = turn_engine.unusable_tool_call_result("write", error, finish_reason="tool_calls", completion_tokens=90, size=len(cut))
+    assert plain == f"[error] invalid tool arguments: {error}"
+
+
+def test_broken_arguments_never_go_back_to_the_server_and_other_rows_keep_their_identity():
+    """Basalt answered the next request with HTTP 400 "Unterminated string starting at: line 1 column 12", and
+    would have answered every later one the same way: the conversation was dead."""
+    cut = '{"content": "import pygame'
+    call = lambda cid, args: {"id": cid, "type": "function", "function": {"name": "write", "arguments": args}}  # noqa: E731
+    rows = [{"role": "system", "content": "s"}, {"role": "user", "content": "u"},
+            {"role": "assistant", "content": None, "tool_calls": [call("a", '{"path": "x"}'), call("b", cut)]},
+            {"role": "tool", "tool_call_id": "b", "content": "[error] cut off"},
+            {"role": "assistant", "content": "fine", "tool_calls": [call("c", '{"path": "y"}')]}]
+    wire = turn_engine.with_valid_tool_arguments(rows)
+    assert [w is r for w, r in zip(wire, rows)] == [True, True, False, True, True]
+    assert [c["function"]["arguments"] for c in wire[2]["tool_calls"]] == ['{"path": "x"}', "{}"]
+    assert wire[2]["tool_calls"][0] is rows[2]["tool_calls"][0] and wire[2]["tool_calls"][1]["id"] == "b"
+    assert rows[2]["tool_calls"][1]["function"]["arguments"] == cut            # the conversation keeps what was written
+    healthy = rows[:2] + rows[4:]
+    assert turn_engine.with_valid_tool_arguments(healthy) is healthy
+
+
 # ── the start notice ─────────────────────────────────────────────────────────
 
 def test_the_start_notice_names_a_lossy_setting_only_when_one_is_on():
