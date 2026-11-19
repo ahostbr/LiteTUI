@@ -205,6 +205,94 @@ def test_custom_reconnect_keeps_invocation_until_explicit_edit(tmp_path):
     assert app.backend.base_url() == 'http://localhost:9999/v1'
 
 
+@pytest.fixture
+def started_server(tmp_path, monkeypatch):
+    """A custom server that exists only once start_custom launches it, and answers /v1/models from a script.
+
+    `states` is what each /v1/models answer reports for the model `listed`; the last entry repeats.
+    Returns (app, served): `served` is the status of every answer the server gave.
+    """
+    import socket
+
+    from litetui import paths, ttyguard
+
+    servers, killed = [], []
+
+    def build(states, *, listed='fixture', timeout=5):
+        served = []
+        with socket.socket() as sock:
+            sock.bind(('127.0.0.1', 0))
+            port = sock.getsockname()[1]
+
+        class Handler(BaseHTTPRequestHandler):
+            def do_GET(self):
+                state = states[min(len(served), len(states) - 1)]
+                served.append(state)
+                row = {'id': listed} if state is None else {'id': listed, 'status': {'value': state}}
+                body = json.dumps({'data': [row]}).encode()
+                self.send_response(200)
+                self.send_header('Content-Length', str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+            def log_message(self, *args):
+                pass
+
+        def popen(argv, **kwargs):
+            server = ThreadingHTTPServer(('127.0.0.1', port), Handler)
+            thread = Thread(target=server.serve_forever, daemon=True)
+            thread.start()
+            servers.append((server, thread))
+            return SimpleNamespace(pid=4321, poll=lambda: None, wait=lambda timeout=None: 0, returncode=None)
+
+        monkeypatch.setattr(ttyguard, 'popen', popen)
+        monkeypatch.setattr(ttyguard, 'kill_tree', lambda pid, proc: (killed.append(pid) or True))
+        monkeypatch.setattr(paths, 'data_root', lambda: tmp_path)
+        settings = Settings(backend='custom', custom_base_url=f'http://127.0.0.1:{port}')
+        app = SimpleNamespace(backend=CustomBackend(settings), _cli_initial_model='fixture', _system=lambda text: None)
+        options = LaunchOptions(server_mode='start', server_command=['server'], timeout=timeout)
+        return app, options, served, killed
+
+    yield build
+    for server, thread in servers:
+        server.shutdown()
+        server.server_close()
+        thread.join()
+
+
+@pytest.mark.asyncio
+async def test_start_custom_waits_while_the_launch_model_is_still_loading(started_server):
+    # Basalt answers /v1/models at once and lists its model as "loading" until the weights are in (T1353).
+    from litetui.launch_options import start_custom
+    app, options, served, _killed = started_server(['loading', 'loading', 'loading', 'loaded'])
+    await start_custom(app, options)
+    assert served[:4] == ['loading', 'loading', 'loading', 'loaded']
+    assert app.backend.loaded_models() == ['fixture']
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('states,listed', [
+    ([None], 'fixture'),            # a plain OpenAI server reports no status: listed means ready
+    (['loaded'], 'fixture'),
+    (['loading'], 'another-model'),  # the launch model is not the one loading: nothing to wait for here
+])
+async def test_start_custom_returns_at_the_first_answer_when_nothing_is_loading(started_server, states, listed):
+    from litetui.launch_options import start_custom
+    app, options, served, _killed = started_server(states, listed=listed)
+    await asyncio.wait_for(start_custom(app, options), 3)
+    assert len(served) == 1
+
+
+@pytest.mark.asyncio
+async def test_start_custom_stops_the_server_when_the_model_never_finishes_loading(started_server):
+    from litetui.launch_options import start_custom
+    app, options, served, killed = started_server(['loading'], timeout=1)
+    with pytest.raises(TimeoutError):
+        await start_custom(app, options)
+    assert len(served) > 1 and set(served) == {'loading'}
+    assert killed == [4321]
+    assert app._custom_server_process is None
+
+
 @pytest.mark.asyncio
 async def test_real_custom_server_start_chat_and_cleanup(tmp_path, monkeypatch):
     import socket
