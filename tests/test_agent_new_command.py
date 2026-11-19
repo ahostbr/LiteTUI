@@ -99,6 +99,41 @@ def test_a_seat_without_a_model_is_asked_to_choose_one_first(seat):
     assert 'Choose a model first' in app.said[0] and not hasattr(app, '_relaunch_argv')
 
 
+# ── T1355: /model on an engine backend IS the model choice ─────────────────────────────────────
+# Ryan, testing Basalt: /backend basalt, /model picked the pack ("Basalt model set to ... - /engine start to
+# serve it."), then /agent new answered "Choose a model first". On an engine backend /model only records
+# which model the next start serves; nothing is served yet, so the seat's authority has no model.
+
+def _engine_seat(seat, backend_name, chosen):
+    """The seat right after /backend <engine> and /model: no served model, one chosen for the next start."""
+    seat.update_execution(backend=backend_name, model=None, thinking_level=seat.authority.thinking_level)
+    cfg = settings.Settings()
+    return _app(seat, settings=cfg, backend=SimpleNamespace(
+        name=backend_name, chosen_model=lambda given=None: chosen if given is cfg else 'WRONG SETTINGS'))
+
+
+@pytest.mark.parametrize('backend_name', ['basalt', 'strata', 'xolotl'])
+def test_an_engine_seat_with_a_model_chosen_for_the_next_start_creates_the_agent(seat, backend_name):
+    app = _engine_seat(seat, backend_name, 'picked-model')
+    convo._cmd_agent_new(app, '/agent-new', 'Scout')
+    flags = dict(zip(app._relaunch_argv[5::2], app._relaunch_argv[6::2]))
+    assert (flags['--backend'], flags['--model']) == (backend_name, 'picked-model')
+    assert app.said == [f'Creating agent Scout ({backend_name} / picked-model) and switching this window to it ...', 'EXIT']
+
+
+def test_an_engine_seat_with_no_model_chosen_is_still_asked_to_choose_one(seat):
+    app = _engine_seat(seat, 'basalt', None)
+    convo._cmd_agent_new(app, '/agent-new', 'Scout')
+    assert 'Choose a model first' in app.said[0] and not hasattr(app, '_relaunch_argv')
+
+
+def test_a_served_model_wins_over_the_one_chosen_for_the_next_start(seat):
+    app = _engine_seat(seat, 'basalt', 'picked-model')
+    seat.update_execution(backend='basalt', model='served-model', thinking_level=seat.authority.thinking_level)
+    convo._cmd_agent_new(app, '/agent-new', 'Scout')
+    assert dict(zip(app._relaunch_argv[5::2], app._relaunch_argv[6::2]))['--model'] == 'served-model'
+
+
 def test_the_cli_relaunches_only_after_this_window_has_released_its_home(tmp_path, monkeypatch):
     import subprocess
 

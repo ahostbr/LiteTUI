@@ -71,6 +71,15 @@ class StrataBackend(OwnedEngineLifecycle):
     def empty_state_hint(self) -> str:
         return f"/model to pick a prepared {self.label} model, then /engine start"
 
+    def chosen_model(self, settings=None) -> str | None:
+        """The id the next /engine start will serve, known before any server answers: the chosen
+        config's `model_name`. None when no model is chosen or the config names none. /agent-new
+        creates an agent with it (T1355): on this backend /model picks a config, it serves nothing."""
+        settings = settings if settings is not None else self._settings
+        path = self._engine.chosen_config(settings)
+        cfg = self._engine.read_config(path) if path else None
+        return str((cfg or {}).get("model_name") or "").strip() or None
+
     def reload_hint(self, rec: dict | None = None) -> str:
         return (f"POST {self.host()}/v1/load (or Load on the {self.label} server's own page); if no server "
                 f"answers, /engine start on the {self.label} backend")

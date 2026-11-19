@@ -95,9 +95,11 @@ def basalt_pack(settings) -> Path | None:
 
 def read_config(path) -> dict | None:
     """What `/model` and `/engine status` ask of a listed model. A pack carries no launch recipe
-    (LiteTUI writes it), so this only says whether `path` is a pack."""
+    (LiteTUI writes it), so this says whether `path` is a pack and the id it will be served under."""
     path = Path(path)
-    return {"pack": str(path)} if path.suffix.lower() == ".basalt" and path.is_file() else None
+    if path.suffix.lower() != ".basalt" or not path.is_file():
+        return None
+    return {"pack": str(path), "model_name": model_name(path)}
 
 
 def config_context(cfg: dict | None) -> int | None:

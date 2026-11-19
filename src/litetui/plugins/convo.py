@@ -80,7 +80,14 @@ def _create_agent_and_relaunch(app, arg: str) -> None:
         app.system_message("/agent-new is for a hand-launched window; a spawned or headless seat keeps its agent.")
         return
     authority = session.authority
-    if authority.model is None:
+    model = authority.model
+    if model is None:
+        # On an engine backend /model records which model the next /engine start serves; nothing is
+        # served yet, so the authority has none. That choice IS the seat's model (T1355, Ryan: /model
+        # then /agent new answered "Choose a model first").
+        chosen = getattr(getattr(app, "backend", None), "chosen_model", None)
+        model = chosen(getattr(app, "settings", None)) if callable(chosen) else None
+    if model is None:
         app.system_message("Choose a model first (/model, or /engine start on an engine backend): "
                            "a new agent is created with this seat's backend, model and thinking level.")
         return
@@ -94,11 +101,11 @@ def _create_agent_and_relaunch(app, arg: str) -> None:
         return
     app._relaunch_argv = [
         sys.executable, "-m", "litetui.cli", "--create-agent", wanted, "--agent-id", str(uuid.uuid4()),
-        "--backend", authority.backend, "--model", authority.model,
+        "--backend", authority.backend, "--model", model,
         "--thinking-level", authority.thinking_level,
     ]
     app._relaunch_env = _relaunch_env(app)
-    app.system_message(f"Creating agent {wanted} ({authority.backend} / {authority.model}) and switching this window to it ...")
+    app.system_message(f"Creating agent {wanted} ({authority.backend} / {model}) and switching this window to it ...")
     app.exit()
 
 
