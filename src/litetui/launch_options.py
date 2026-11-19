@@ -273,10 +273,16 @@ async def start_custom(app, options):
                 if proc.poll() is not None:
                     raise BackendError(f'Custom server exited ({proc.returncode}); see {log}')
                 try:
-                    await backend.list_models()
-                    return
+                    rows = await backend.list_models()
                 except BackendError:
                     await asyncio.sleep(0.25)
+                    continue
+                # A server can answer before its model is usable: Basalt lists the model with
+                # status "loading" for about 45 s. Wait while the launch model is listed and not
+                # loaded; a server that does not list it, or reports no status, is ready as before.
+                if not any(row.key == app._cli_initial_model and not row.loaded for row in rows):
+                    return
+                await asyncio.sleep(0.25)
     except BaseException:
         stop_custom(app)
         raise
