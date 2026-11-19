@@ -92,7 +92,7 @@ def _friendly_label(name: str) -> str:
         return FIELD_LABELS[name]
     words = name.replace("_", " ").split()
     special = {"tts": "Speech", "stt": "Dictation", "mcp": "MCP", "lmstudio": "LM Studio",
-               "lm": "Local model", "ninfer": "NInfer", "strata": "Strata", "xolotl": "Xolotl", "llama": "llama.cpp", "api": "API",
+               "lm": "Local model", "ninfer": "NInfer", "strata": "Strata", "xolotl": "Xolotl", "basalt": "Basalt", "llama": "llama.cpp", "api": "API",
                "hf": "Hugging Face", "kv": "KV", "tps": "tokens per second", "pct": "percentage",
                "s": "seconds", "mib": "MiB", "gguf": "GGUF"}
     return " ".join(special.get(word, word) for word in words).capitalize()
@@ -164,6 +164,17 @@ FIELD_DESCRIPTIONS = {
     "xolotl_root": "The Xolotl checkout (built engine, serve venv, strata-<model>.json); blank uses LiteSuite's.",
     "xolotl_config": "Prepared model (strata-<model>.json in the checkout) served at the next Xolotl engine start.",
     "xolotl_max_context": "Context tokens (--ctx) requested at Xolotl startup; blank keeps the config's value.",
+    "basalt_host": "Address of a Basalt server started separately; blank uses port 8091 on this PC.",
+    "basalt_root": "The Basalt install (bin, serve, .venv and a packs folder); blank uses ~/.litesuite/llm/basalt.",
+    "basalt_config": "The .basalt pack served at the next Basalt engine start; blank uses the one pack the install holds.",
+    "basalt_max_context": "Context tokens Basalt is started with; blank is 131,072. Up to 262,144.",
+    "basalt_kv": "How the KV cache is stored: fp16, int8, q4_0 or k8v4. Blank is int8 above 8,192 tokens of context.",
+    "basalt_vram_reserve_mib": "VRAM Basalt leaves free for other programs; the expert cache gets the rest. Blank is Basalt's 700.",
+    "basalt_expert_cache": "Experts kept in VRAM: auto fills the card down to the VRAM reserve, a number fixes the count.",
+    "basalt_conversation_cache_mib": "RAM for parked conversations, so a side request does not cost the main one its cache. Blank is 8,192.",
+    "basalt_spec": "Longest draft window, in tokens (Basalt's spec). Blank is Basalt's 8; 0 or 1 turns drafting off.",
+    "basalt_vision": "Image input: off, dynamic (inside the engine, no VRAM at rest) or cpu (slow). Blank is off.",
+    "basalt_extra_settings": "Any other Basalt setting, as a JSON object. The lossy ones (route-tail-skip, route-prior, relaxed-drafting) are faster and change what the model writes.",
     "tts_enabled": "Show Speak on replies; turning it off stops LiteTUI-owned playback, not LiteSuite's queue.",
     "tts_litesuite_first": "Use LiteSuite's selected voice when reachable; off uses only the fallback engine. LiteSuite owns queued playback and stopping it.",
     "tts_engine": "Fallback when LiteSuite is unavailable, or the primary engine when LiteSuite preference is off.",
@@ -400,6 +411,17 @@ SETTINGS_SECTIONS: tuple[SettingsSectionSpec, ...] = (
         "xolotl", "Xolotl", "xolotl-engine", "Engine",
         "DeepSeek-V4.1-Flash on one GPU, a pinned RAM arena and NVMe (github.com/Indras-Mirror/Xolotl).",
         ("xolotl_host", "xolotl_root", "xolotl_config", "xolotl_max_context"), scope="device", keywords=("DeepSeek", "V4.1", "engine", "RAM", "arena", "context"),
+    ),
+    _section(
+        "basalt", "Basalt", "basalt-engine", "Engine",
+        "Qwen3.8-Flash-Next on an RTX 50 card plus system RAM (github.com/jesdga95/basalt).",
+        ("basalt_host", "basalt_root", "basalt_config", "basalt_max_context"), scope="device", keywords=("Flash-Next", "engine", "RTX 50", "Blackwell", "context", "pack"),
+    ),
+    _section(
+        "basalt", "Basalt", "basalt-load", "Load options",
+        "What a Basalt start is given. Blank leaves Basalt's own default; everything applies on the next engine start.",
+        ("basalt_kv", "basalt_vram_reserve_mib", "basalt_expert_cache", "basalt_conversation_cache_mib", "basalt_spec", "basalt_vision", "basalt_extra_settings"),
+        scope="device", keywords=("kv", "vram", "reserve", "expert cache", "conversation cache", "draft", "spec", "vision", "extra"),
     ),
     _section(
         "voice", "Voice", "voice-speak", "Speak / TTS out",

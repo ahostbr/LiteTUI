@@ -33,6 +33,7 @@ from litetui.llm_backend import LlamaCppBackend, LMStudioBackend, _VramGate
 from litetui.ninfer_backend import NInferBackend
 from litetui.strata_backend import StrataBackend
 from litetui.xolotl_backend import XolotlBackend
+from litetui.basalt_backend import BasaltBackend
 from litetui.model_resource_session import AdmissionBlocked
 
 _LOOPBACK = {"127.0.0.1", "::1", "localhost"}
@@ -47,6 +48,7 @@ _ENDPOINT_ADAPTERS = (
     (NInferBackend, lambda b: getattr(b, "_host", None)),
     (StrataBackend, lambda b: b.host()),
     (XolotlBackend, lambda b: b.host()),
+    (BasaltBackend, lambda b: b.host()),
 )
 
 

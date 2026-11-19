@@ -59,6 +59,7 @@ from textual.widgets import (
 # by patching THIS module -- i.e. by touching the screen, which is the
 # exact thing the derivation exists to stop being necessary.
 from litetui import free_tier, gpu_gate, llm_backend, stt_backend, tool_policy, voice_backend
+from litetui import basalt_engine
 from litetui import ninfer_engine
 from litetui import strata_options
 from litetui import settings as settings_mod
@@ -694,6 +695,20 @@ class SettingsBody(Widget):
             note = f"LOCKED by ${locked}.  {help_text}" if locked else help_text
             yield Static(note, classes="set-help")
 
+    def _optional_choice_row(self, name: str, label: str, values, blank_label: str, help_text: str):
+        """A Select for an optional string: its first row is "" and means UNSET (`_collect` saves None)."""
+        locked = settings_mod.source_of(name)
+        with Vertical(classes="set-row"):
+            yield Label(label, classes="set-label")
+            yield Select(
+                literal_options([(blank_label, ""), *[(v, v) for v in values]]),
+                value=getattr(self._start, name) or "",
+                id=f"f-{name}",
+                allow_blank=False,
+                disabled=locked is not None,
+            )
+            yield Static(f"LOCKED by ${locked}.  {help_text}" if locked else help_text, classes="set-help")
+
     def _strata_option_rows(self):
         """Strata's run options (strata_options.py), one collapsible section each."""
         for section in strata_options.SECTIONS:
@@ -1136,6 +1151,79 @@ class SettingsBody(Widget):
                             "the next /engine start.",
                             placeholder="blank, or tokens such as 262144",
                         )
+                with TabPane("Basalt", id="tab-basalt"):
+                    with VerticalScroll(classes="set-scroll"):
+                        yield self._section_header("basalt-engine")
+                        yield from self._text_row(
+                            "basalt_host", "Basalt host",
+                            "Blank uses port 8091 on this PC. Set it only for a Basalt server "
+                            "you started yourself somewhere else.",
+                            placeholder="http://127.0.0.1:8091",
+                        )
+                        yield from self._text_row(
+                            "basalt_root", "Basalt: install folder",
+                            "Blank uses ~/.litesuite/llm/basalt. A release or a build: it holds "
+                            "bin/basalt, serve/, a .venv and a packs folder. RTX 50 cards only. "
+                            "Engine and docs: https://github.com/jesdga95/basalt",
+                            placeholder="C:/Users/you/.litesuite/llm/basalt",
+                        )
+                        yield from self._text_row(
+                            "basalt_config", "Basalt: model (a .basalt pack)",
+                            "Blank uses the one pack the install's packs folder holds; /model "
+                            "picks between several. /engine start serves this.",
+                            placeholder="C:/Users/you/.litesuite/llm/basalt/packs/model.basalt",
+                        )
+                        yield from self._text_row(
+                            "basalt_max_context", "Basalt: context length (max-context)",
+                            "Blank is 131,072. Up to 262,144. A longer context takes VRAM from "
+                            "the expert cache, not system RAM. Applies on the next /engine start.",
+                            placeholder="blank, or tokens such as 150000",
+                        )
+                        yield self._section_header("basalt-load")
+                        yield from self._optional_choice_row(
+                            "basalt_kv", "Basalt: KV cache format (kv)",
+                            basalt_engine.KV_CHOICES, "As LiteTUI decides",
+                            "How the context is stored on the card. Blank is int8 above 8,192 tokens "
+                            "of context (fp16 takes twice the VRAM); q4_0 and k8v4 are smaller still.",
+                        )
+                        yield from self._text_row(
+                            "basalt_vram_reserve_mib", "Basalt: VRAM kept free, MiB (vram-reserve-mib)",
+                            "VRAM left for other programs; the expert cache gets the rest. Blank is "
+                            "Basalt's 700; it refuses less than 256. Measured here at 2,000: 26.4 GiB "
+                            "of weights on the card.",
+                            placeholder="blank = 700",
+                        )
+                        yield from self._text_row(
+                            "basalt_expert_cache", "Basalt: expert cache size (expert-cache)",
+                            "Experts kept in VRAM: auto fills the card down to the VRAM reserve, a "
+                            "number fixes the count. Leave auto unless you have measured.",
+                            placeholder="auto, or a slot count",
+                        )
+                        yield from self._text_row(
+                            "basalt_conversation_cache_mib", "Basalt: parked conversations, MiB (conversation-cache-mib)",
+                            "RAM for conversations set aside while another request runs, so a side "
+                            "request does not cost the main one its cache. Blank is 8,192; 0 turns it off.",
+                            placeholder="blank = 8192",
+                        )
+                        yield from self._text_row(
+                            "basalt_spec", "Basalt: draft window, tokens (spec)",
+                            "The most tokens drafted and checked together. Blank is Basalt's 8; "
+                            "0 or 1 turns drafting off. Output is the same either way.",
+                            placeholder="blank = 8",
+                        )
+                        yield from self._optional_choice_row(
+                            "basalt_vision", "Basalt: image input (vision)",
+                            basalt_engine.VISION_CHOICES, "As Basalt decides (off)",
+                            "dynamic runs the image encoder inside the engine and costs no VRAM "
+                            "at rest; cpu is slow (about a minute an image).",
+                        )
+                        yield from self._text_row(
+                            "basalt_extra_settings", "Basalt: extra settings (JSON)",
+                            "Any other Basalt setting, as a JSON object added to the model's entry "
+                            "of its config. WARNING: route-tail-skip, route-prior and relaxed-drafting "
+                            "are faster and change what the model writes; a start with one on says so.",
+                            placeholder='{"prefill": "auto:16384"}',
+                        )
                 with TabPane("Voice", id="tab-voice"):
                     with VerticalScroll(classes="set-scroll"):
                         yield self._section_header("voice-speak")
@@ -1486,7 +1574,7 @@ class SettingsBody(Widget):
                             "last chat request unchanged plus one message, and keeps message 0, "
                             "so the engine reuses what it holds instead of re-reading the whole "
                             "prompt. They use the chat's thinking level, not the compact one.",
-                            placeholder="ninfer, llamacpp, strata, xolotl, lmstudio",
+                            placeholder="ninfer, llamacpp, strata, xolotl, basalt, lmstudio",
                         )
 
                         # ── Capabilities ─────────────────────────────────────────────
@@ -1961,6 +2049,7 @@ class SettingsBody(Widget):
         if hasattr(out, "tts_timeout"):
             _validate_tts_timeout(out.tts_timeout)
         strata_options.validate(out)
+        basalt_engine.validate(out)
 
         # The theme creator: a non-empty name mints (or overwrites) a custom
         # theme from the ct-* fields and SELECTS it, so Ctrl+S gives instant

@@ -30,7 +30,7 @@ def test_parse_refuses_everything_else(text):
 def test_every_backend_with_a_context_has_one_real_settings_field():
     fields = set(Settings.__dataclass_fields__)
     assert set(cc.MAIN_KEY.values()) <= fields
-    assert {"lmstudio", "llamacpp", "ninfer", "strata", "xolotl", "custom"} == set(cc.MAIN_KEY)
+    assert {"lmstudio", "llamacpp", "ninfer", "strata", "xolotl", "basalt", "custom"} == set(cc.MAIN_KEY)
     for hosted in ("codex", "claude", "cline", "free"):
         assert cc.main_key(hosted) is None
 

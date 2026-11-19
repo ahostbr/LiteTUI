@@ -292,7 +292,7 @@ def _cmd_model(app, name: str, arg: str) -> None:
     if not arg and getattr(app.backend, "name", "") == "ninfer":
         _pick_ninfer_artifact(app)
         return
-    if not arg and getattr(app.backend, "name", "") in ("strata", "xolotl"):
+    if not arg and getattr(app.backend, "name", "") in ("strata", "xolotl", "basalt"):
         _pick_server_config(app)
         return
     if arg:
@@ -388,6 +388,22 @@ def _xolotl_mark(app) -> str:
     return f"installed, {count} model{'' if count == 1 else 's'} — /engine start"
 
 
+def _basalt_mark(app) -> str:
+    from litetui import basalt_engine
+    from litetui.basalt_backend import BasaltBackend
+
+    host = basalt_engine.default_host(app.settings)
+    if BasaltBackend._health_state(host, timeout=0.5) is not None:
+        return f"server answering at {host}"
+    root = basalt_engine.basalt_root(app.settings)
+    if not basalt_engine.engine_exe(root).is_file() or not basalt_engine.server_python(root).is_file():
+        return "not installed — set basalt_root to a Basalt install"
+    count = len(basalt_engine.list_packs(app.settings))
+    if not count:
+        return "installed, no pack in its packs folder"
+    return f"installed, {count} model{'' if count == 1 else 's'} — /engine start"
+
+
 def _claude_mark() -> str:
     """Readiness without starting the CLI: SDK importable + subscription login."""
     import importlib.util
@@ -428,10 +444,11 @@ def _cmd_engine(app, name: str, arg: str) -> None:
         from litetui import gpu_gate
         # T893: NInfer is never named on a box that is not an RTX 5090.
         if gpu_gate.is_rtx_5090():
-            app.system_message("/engine drives the NInfer, Strata or Xolotl backend — /backend ninfer, "
-                               "/backend strata or /backend xolotl first.")
+            app.system_message("/engine drives the NInfer, Strata, Xolotl or Basalt backend — /backend ninfer, "
+                               "/backend strata, /backend xolotl or /backend basalt first.")
         else:
-            app.system_message("/engine drives the Strata or Xolotl backend — /backend strata or /backend xolotl first.")
+            app.system_message("/engine drives the Strata, Xolotl or Basalt backend — /backend strata, "
+                               "/backend xolotl or /backend basalt first.")
         return
     is_ninfer = getattr(backend, "name", "") == "ninfer"
     verb, *rest = (arg.strip().lower() or "status").split()
@@ -667,6 +684,7 @@ def backend_rows(app) -> list[tuple[str, str]]:
         "ninfer": _ninfer_mark(app),
         "strata": _strata_mark(app),
         "xolotl": _xolotl_mark(app),
+        "basalt": _basalt_mark(app),
         "codex": model_transport.auth_status("codex"),
         "claude": _claude_mark(),
         "cline": cline_backend.auth_status(),
@@ -891,7 +909,7 @@ def _cmd_load(app, name: str, arg: str) -> None:
             "/model picks the artifact, /engine start serves it."
         )
         return
-    if getattr(app.backend, "name", "") in ("strata", "xolotl"):
+    if getattr(app.backend, "name", "") in ("strata", "xolotl", "basalt"):
         app.system_message(
             f"{app.backend.label} serves one model per process — there is nothing to load. "
             "/model picks the model, /engine start serves it."

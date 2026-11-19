@@ -513,11 +513,13 @@ def start(settings, *, healthy, spawn=ttyguard.popen, notice=None, progress=None
 
 
 def spawn_server(settings, *, healthy, spawn, notice, label: str, plan, refuse, log,
-                 timeout: float, progress=None, cancel=None) -> OwnedEngine:
-    """The start every engine behind Strata's `serve/server.py` shares (Strata, Xolotl):
-    plan, refuse before anything spawns, spawn into the log, adopt the process into a
-    kill-on-close job, wait for the server's ready line. The launcher passes its own
-    `launch_plan`, `refuse_reason`, `log_path` and timeout."""
+                 timeout: float, progress=None, cancel=None,
+                 ready_marker: str = STRATA_READY_MARKER) -> OwnedEngine:
+    """The start every engine behind Strata's `serve/server.py` shares (Strata, Xolotl, and
+    Basalt's fork of it): plan, refuse before anything spawns, spawn into the log, adopt the
+    process into a kill-on-close job, wait for the server's ready line. The launcher passes its
+    own `launch_plan`, `refuse_reason`, `log_path`, timeout and, where the server prints another
+    line once its model is in (Basalt), `ready_marker`."""
     _log_event("engine start requested", log)
     try:
         argv, root, cfg, host = plan(settings)
@@ -554,7 +556,7 @@ def spawn_server(settings, *, healthy, spawn, notice, label: str, plan, refuse, 
                         job=job, args=tuple(argv), registered=False)
     # The shared wait (T1311): a stall window, not a wall; /engine stop's cancel ends it.
     outcome, fresh = ninfer_engine.wait_for_ready(lp, start_off, proc, host, healthy=healthy,
-                                                  ready_marker=STRATA_READY_MARKER, stall_s=timeout,
+                                                  ready_marker=ready_marker, stall_s=timeout,
                                                   interval=1.0, cancel=cancel, progress=progress)
     if outcome == "ready":
         atexit.register(ninfer_engine.stop, owned)

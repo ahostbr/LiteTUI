@@ -72,9 +72,11 @@ def request_thinks(extra: dict, effort=_UNPINNED) -> bool:
 #: Backend -> the request key that caps thinking, and the setting that holds N (T1312 NInfer, T1318 Strata).
 #: Xolotl serves through Strata's `serve/server.py`, so it takes Strata's key and Strata's one setting.
 THINKING_BUDGET_KEY = {"ninfer": "thinking_budget", "strata": "reasoning_budget_tokens",
-                       "xolotl": "reasoning_budget_tokens"}
+                       "xolotl": "reasoning_budget_tokens", "basalt": "reasoning_budget_tokens"}
 _THINKING_BUDGET_SETTING = {"ninfer": "ninfer_thinking_budget", "strata": "strata_reasoning_budget_tokens",
-                            "xolotl": "strata_reasoning_budget_tokens"}
+                            "xolotl": "strata_reasoning_budget_tokens",
+                            # T1355 (Ryan: "same as Strata"): the same model, one Settings number.
+                            "basalt": "strata_reasoning_budget_tokens"}
 
 
 def thinking_budget_for(settings, backend_name: str) -> int | None:
@@ -90,7 +92,7 @@ def thinking_budget_for(settings, backend_name: str) -> int | None:
 _LEVEL_BUDGET_SHARE = {"xhigh": (1, 1), "max": (1, 1), "ultra": (1, 1), "high": (3, 4), "medium": (1, 2),
                        "low": (1, 4), "minimal": (1, 4)}
 #: Backends whose budget follows the level; NInfer keeps the one budget T1312 gave it.
-_LEVEL_BUDGET_BACKENDS = frozenset({"strata", "xolotl"})
+_LEVEL_BUDGET_BACKENDS = frozenset({"strata", "xolotl", "basalt"})
 
 
 def level_budget(backend_name: str, budget: int | None, level: str | None) -> int | None:
@@ -194,6 +196,10 @@ def _resolve_reasoning_effort(
         # Strata's server accepts none/low/medium/high and answers 400 to anything else, so a
         # level saved under another backend is folded onto the nearest one it has.
         return {"minimal": "low", "xhigh": "high", "max": "high", "ultra": "high"}.get(level, level)
+    if backend_name == "basalt":
+        # Basalt's server takes none/low/medium/high/xhigh/max (serve/config.py); the two names it
+        # does not have are folded onto the nearest it does.
+        return {"minimal": "low", "ultra": "max"}.get(level, level)
     if backend_name == "xolotl":
         # serve_ds41.py takes none/low/medium/high/xhigh/max (and 1-100); "minimal" it reads as
         # low already, "ultra" it would answer 400 to.
