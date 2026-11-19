@@ -41,6 +41,25 @@ def test_request_rows_keep_identity_and_drop_only_private_keys(app):
     assert app.conversation[0]["litetui_prompt_owner"] == 1, "the saved row keeps its provenance"
 
 
+def test_a_tool_call_cut_off_mid_arguments_goes_out_as_valid_json(app):
+    """T1355, Ryan's Basalt test: the reply hit its output limit inside a `write` call, the next request carried
+    the cut-off arguments, and the server refused it (HTTP 400 "Unterminated string ...") from then on."""
+    import json
+
+    cut = '{"path": "lamp.py", "content": "import pygame'
+    app._append({"role": "user", "content": "write it"})
+    app._append({"role": "assistant", "content": None, "tool_calls": [
+        {"id": "c1", "type": "function", "function": {"name": "write", "arguments": cut}}]})
+    app._append({"role": "tool", "tool_call_id": "c1", "name": "write", "content": "[error] the write call was cut off"})
+    wire = app._request_messages()
+    for row in wire:
+        for call in row.get("tool_calls") or []:
+            assert isinstance(json.loads(call["function"]["arguments"]), dict)
+    assert wire[-2]["tool_calls"][0]["id"] == "c1" and wire[-2]["tool_calls"][0]["function"]["arguments"] == "{}"
+    assert app.conversation[-2]["tool_calls"][0]["function"]["arguments"] == cut, "the conversation keeps what was written"
+    assert wire[-1] is app.conversation[-1] and wire[-3] is app.conversation[-3]
+
+
 @pytest.mark.asyncio
 async def test_codex_turn_finds_the_accepted_user_row_and_starts_steering(app, monkeypatch):
     app._append({"role": "user", "content": "hello"})

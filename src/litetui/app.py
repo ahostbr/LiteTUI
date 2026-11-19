@@ -117,7 +117,8 @@ from litetui import appsvc
 from litetui import scheduler as sched_mod
 from litetui import tool_context
 from litetui import seat_authority, tool_policy
-from litetui.turn_engine import TurnEngine, side_call_reasoning_effort
+from litetui.turn_engine import (TurnEngine, side_call_reasoning_effort, unusable_tool_call_result,
+                                 with_valid_tool_arguments)
 from litetui import thinking_probe
 from litetui import themes as themes_mod
 from litetui.colorpicker import ColorPickerScreen  # noqa: F401 — CSS binds by class name
@@ -4100,8 +4101,10 @@ class LiteTUI(App):
         # in codex_app_server), so copying every row silently disabled mid-turn steering.
         def private(key):
             return key.startswith("litetui_prompt_") or key in {"litetui_ordinary_text", "litetui_seat_text"}
-        return [{k: v for k, v in message.items() if not private(k)} if any(map(private, message)) else message
-                for message in messages]
+        # T1355: a tool call cut off at the output limit is stored as the model wrote it and sent as `{}`.
+        return with_valid_tool_arguments([
+            {k: v for k, v in message.items() if not private(k)} if any(map(private, message)) else message
+            for message in messages])
     def _ensure_legacy_store_notice(self, *, native_unknown: bool = False) -> None:
         if getattr(self, "_store_notice_text", None):
             return
@@ -9474,6 +9477,7 @@ class LiteTUI(App):
             text_full = ""
             reasoning = ""
             tool_acc: dict[int, dict] = {}
+            finish_reason = None    # why the reply ended; "length" = cut at the output limit
             provider_metadata = None
             tool_msgs: dict[int, ToolMessage] = {}
 
@@ -9717,6 +9721,7 @@ class LiteTUI(App):
                     if not chunk.choices:
                         continue
                     delta = chunk.choices[0].delta
+                    finish_reason = getattr(chunk.choices[0], "finish_reason", None) or finish_reason
                     if not native_loop:
                         self._eta.record_first_delta()
                     # LM Studio streams the thinking trace as `reasoning_content`
@@ -10032,7 +10037,9 @@ class LiteTUI(App):
                         if not isinstance(args, dict):
                             raise ValueError("arguments must be a JSON object")
                     except Exception as e:
-                        result, ok = f"[error] invalid tool arguments: {e}", False
+                        result, ok = unusable_tool_call_result(
+                            name, str(e), finish_reason=finish_reason, size=len(args_json),
+                            completion_tokens=(request_usage or {}).get("completion_tokens")), False
                     else:
                         result, ok = await self._execute_tool(name, args)
                         if ok and name not in {"self_compact", "tool_search"}:

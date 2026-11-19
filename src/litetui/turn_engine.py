@@ -36,6 +36,7 @@ THE TWO REQUEST BUILDERS ARE SEPARATE ON PURPOSE
 
 from __future__ import annotations
 
+import json
 import re
 
 from litetui import llm_backend
@@ -58,6 +59,47 @@ def is_deepseek_model(model_id: str | None) -> bool:
 _UNPINNED = object()
 
 
+def tool_arguments_error(arguments) -> str | None:
+    """Why a tool call's `arguments` text cannot be run, or None when it is a JSON object."""
+    try:
+        parsed = json.loads(arguments) if arguments else {}
+    except ValueError as exc:
+        return str(exc)
+    return None if isinstance(parsed, dict) else "arguments must be a JSON object"
+
+
+def unusable_tool_call_result(name: str, error: str, *, finish_reason: str | None, completion_tokens: int | None,
+                              size: int) -> str:
+    """What the model is told when a call's arguments cannot be run. A reply that ended at its output limit
+    (`finish_reason` "length") is named as that, with what to do next: "Unterminated string" alone sent the
+    model round the same oversized call again (T1355, Ryan's Basalt test: a whole file in one `write`)."""
+    if finish_reason == "length":
+        used = f" ({completion_tokens:,} tokens)" if completion_tokens else ""
+        return (f"[error] the {name} call was cut off: the reply reached its output limit{used} before the "
+                f"call's arguments were complete ({size:,} characters arrived). Nothing was run and nothing was "
+                "written. Make the call again with less in it: for a large file, write a first part, then add "
+                "the rest with further calls.")
+    return f"[error] invalid tool arguments: {error}"
+
+
+def with_valid_tool_arguments(messages: list[dict]) -> list[dict]:
+    """`messages` for the wire: an assistant tool call whose stored arguments are not a JSON object goes out as
+    `{}`. The conversation keeps what the model wrote; a server that parses the history (Basalt, llama.cpp's
+    template) answers a cut-off call with HTTP 400 on EVERY later request, so the conversation was dead from
+    there. Only a row that needs it is copied (Codex finds its rows by identity)."""
+    out = messages
+    for index, message in enumerate(messages):
+        calls = message.get("tool_calls") if message.get("role") == "assistant" else None
+        if not calls or not any(tool_arguments_error((c.get("function") or {}).get("arguments")) for c in calls):
+            continue
+        if out is messages:
+            out = list(messages)
+        out[index] = {**message, "tool_calls": [
+            {**c, "function": {**c["function"], "arguments": "{}"}}
+            if tool_arguments_error((c.get("function") or {}).get("arguments")) else c for c in calls]}
+    return out
+
+
 def request_thinks(extra: dict, effort=_UNPINNED) -> bool:
     """False only when the request turns thinking OFF: reasoning_effort "none" or enable_thinking false.
 
@@ -77,6 +119,17 @@ _THINKING_BUDGET_SETTING = {"ninfer": "ninfer_thinking_budget", "strata": "strat
                             "xolotl": "strata_reasoning_budget_tokens",
                             # T1355 (Ryan: "same as Strata"): the same model, one Settings number.
                             "basalt": "strata_reasoning_budget_tokens"}
+
+
+#: Backends that get the thinking ROOM in max_tokens but not the budget key (T1355). Basalt 0.4.1's server
+#: (serve/service.py `run`, text-prompt path) caps the first pass at the request's budget and then takes that
+#: pass's cap as the whole reply's cap, so a request for max_tokens 32,768 with a 16,384 budget ended at 16,384
+#: tokens in all: Ryan's `write` of a whole file was cut mid-arguments (his server log: every request
+#: "thinking budget 12288 tokens, output cap 16384", the failing one "tg=16384 ... end=length"; mine at think:low
+#: "thinking budget 3072 tokens, output cap 4096" for a request of 20,480). With no budget in the request the
+#: server keeps max_tokens and splits it itself (thinking gets at most three quarters). The think level is still
+#: sent. Remove "basalt" here once its server keeps the request's cap.
+_ROOM_WITHOUT_BUDGET_KEY = frozenset({"basalt"})
 
 
 def thinking_budget_for(settings, backend_name: str) -> int | None:
@@ -349,7 +402,8 @@ class TurnEngine:
         if budget_key and thinking_budget and thinking_budget > 0 and request_thinks(extra):
             # `level`: what the user chose, before the fold `_resolve_reasoning_effort` applied to the wire value.
             budget = level_budget(backend_name, thinking_budget, level)
-            extra[budget_key] = int(budget)
+            if backend_name not in _ROOM_WITHOUT_BUDGET_KEY:
+                extra[budget_key] = int(budget)
             kwargs["max_tokens"] = with_thinking_room(kwargs["max_tokens"], budget)
         if extra:
             kwargs["extra_body"] = extra
@@ -427,7 +481,8 @@ class TurnEngine:
             # Pinned: only the chat turn's wire effort is known here, so Strata's fold applies (xhigh reads as high).
             budget = level_budget(backend_name, thinking_budget,
                                   thinking_level if pinned_effort is _UNPINNED else pinned_effort)
-            extra_body[budget_key] = int(budget)
+            if backend_name not in _ROOM_WITHOUT_BUDGET_KEY:
+                extra_body[budget_key] = int(budget)
             max_tokens = with_thinking_room(max_tokens, budget)
         kwargs: dict = {
             "model": model_id or "local-model",
