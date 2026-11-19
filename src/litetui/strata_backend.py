@@ -137,8 +137,17 @@ class StrataBackend(OwnedEngineLifecycle):
         if self._owned is None:
             host = self.host()
             if self._health_state(host) is not None:
+                # T1355: an engine an earlier seat of this LiteTUI started (this window before
+                # /agent-new) is ours to stop, by its record and only when the live process matches it.
+                taken = strata_engine.stop_recorded(self._engine.log_path(), host, self.label,
+                                                    healthy=lambda h: self._health_state(h) is not None)
+                if taken is not None and taken.freed:
+                    with self._lifecycle_lock:
+                        self._host = None
+                    return taken.message
+                why = f" LiteTUI's record of an engine there was not used: {taken.reason}." if taken is not None else ""
                 return (f"the {self.label} server at {host} was not started by this LiteTUI — stop it where "
-                        "it was started (its window, or the app that ran it).")
+                        f"it was started (its window, or the app that ran it).{why}")
             note = self._foreign_note(host)
             return f"no {self.label} server is running at {host}{note}." if note else NOTHING_RUNNING
         host = self._owned.host
@@ -159,6 +168,9 @@ class StrataBackend(OwnedEngineLifecycle):
             chosen = path.stem.removeprefix("strata-") if path else "none chosen — /model"
             return (f"no {self.label} server at {host}{self._foreign_note(host)}. "
                     f"Model for the next /engine start: {chosen}.")
+        if strata_engine.recorded_engine(self._engine.log_path(), host) is not None:
+            return (f"{self.label} server at {host}, started by LiteTUI in an earlier seat of this data folder: "
+                    f"{said} — /engine stop stops it.")
         return f"attached {self.label} server at {host}: {said}"
 
     # -- models --------------------------------------------------------------
