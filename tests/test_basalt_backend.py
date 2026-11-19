@@ -211,6 +211,34 @@ def test_the_start_notice_names_a_lossy_setting_only_when_one_is_on():
     assert lossy.startswith(plain) and "WARNING: route-tail-skip is on" in lossy and "changes what the model writes" in lossy
 
 
+# ── the model chosen for the next start (what /agent-new creates an agent with) ──
+
+def test_the_model_the_next_start_serves_is_known_before_any_server(tmp_path):
+    """Ryan, testing: /model picked the pack and /agent new still said "Choose a model first"."""
+    packs = tmp_path / "basalt" / "packs"
+    packs.mkdir(parents=True)
+    one, two, root = packs / f"{MODEL}.basalt", packs / "Other.basalt", str(tmp_path / "basalt")
+    one.write_bytes(b"x")
+    assert BasaltBackend(Settings(basalt_root=root)).chosen_model() == MODEL             # the only pack
+    two.write_bytes(b"x")
+    backend = BasaltBackend(Settings(basalt_root=root))
+    assert backend.chosen_model() is None                                                # two, none chosen
+    assert backend.chosen_model(Settings(basalt_root=root, basalt_config=str(two))) == "Other"   # the caller's settings
+    assert BasaltBackend(Settings(basalt_root=root, basalt_config=str(packs / "gone.basalt"))).chosen_model() is None
+
+
+def test_strata_answers_the_same_question_from_its_configs_model_name(tmp_path):
+    root = tmp_path / "strata"
+    root.mkdir()
+    named, bare = root / "strata-iq3_s.json", root / "strata-bare.json"
+    named.write_text(json.dumps({"exe": "strata.exe", "args": [], "model_name": "qwen3.8-flash-next-iq3_s"}), encoding="utf-8")
+    bare.write_text(json.dumps({"exe": "strata.exe", "args": []}), encoding="utf-8")
+    backend = StrataBackend(Settings(strata_root=str(root), strata_config=str(named)))
+    assert backend.chosen_model() == "qwen3.8-flash-next-iq3_s"
+    assert backend.chosen_model(Settings(strata_root=str(root), strata_config=str(bare))) is None   # names none: not guessed
+    assert StrataBackend(Settings(strata_root=str(root))).chosen_model() is None          # two, none chosen
+
+
 # ── the Settings dialog ──────────────────────────────────────────────────────
 
 BASALT_FIELDS = ("basalt_host", "basalt_root", "basalt_config", "basalt_max_context", "basalt_kv",

@@ -84,7 +84,8 @@ def test_a_model_is_a_pack_file_one_is_chosen_two_are_not_guessed(tmp_path):
     (only.parent / "notes.txt").write_text("not a pack", encoding="utf-8")
     (only.parent / "half.basalt.partial").write_bytes(b"x")
     assert eng.list_packs(settings) == [only] and eng.basalt_pack(settings) == only
-    assert eng.read_config(only) == {"pack": str(only)} and eng.read_config(only.parent / "notes.txt") is None
+    assert eng.read_config(only) == {"pack": str(only), "model_name": only.stem}
+    assert eng.read_config(only.parent / "notes.txt") is None
     assert eng.config_context(eng.read_config(only)) is None       # the context is LiteTUI's setting
     second = only.parent.parent / "models" / "Other.basalt"        # a release's own download folder
     second.parent.mkdir()
