@@ -122,7 +122,7 @@ async def test_a_builtin_theme_still_resolves_every_variable() -> None:
 
         # And the widgets that consume them still render.
         block = m.ThinkingBlock()
-        a.query_one("#chat-log").mount(block)
+        await a.query_one("#chat-log").mount(block)
         await pilot.pause()
         assert block.size.height > 0
 
