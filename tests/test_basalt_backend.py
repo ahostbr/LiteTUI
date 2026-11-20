@@ -283,6 +283,33 @@ def test_the_model_the_next_start_serves_is_known_before_any_server(tmp_path):
     assert BasaltBackend(Settings(basalt_root=root, basalt_config=str(packs / "gone.basalt"))).chosen_model() is None
 
 
+def _pack_with(path, sections):
+    """A file with a real `.basalt` header (Basalt's tools/model_file.py layout) and no payload."""
+    import struct
+    head = struct.pack("<8sIIQ40s", b"BASALTMF", 2, len(sections), 64 << 10, b"")
+    head += b"".join(struct.pack("<64sQQ32s16s", name.encode(), 0, 0, b"", b"") for name in sections)
+    path.write_bytes(head.ljust(64 << 10, b"\0"))
+
+
+def test_view_image_is_told_why_basalt_takes_no_pictures_and_what_to_do(tmp_path):
+    """Ryan, 2026-11-20: his Basalt was started with images off; view_image's report said "this model
+    cannot see images" and read as a broken tool. With a projector in the pack it says what to do."""
+    packs = tmp_path / "basalt" / "packs"
+    packs.mkdir(parents=True)
+    root, pack = str(tmp_path / "basalt"), packs / f"{MODEL}.basalt"
+    _pack_with(pack, ["dense", "experts", "vision/mmproj", "meta"])
+    started_off = BasaltBackend(Settings(basalt_root=root)).image_input_off_note()
+    assert "started with image input off" in started_off and "/engine stop, then /engine start" in started_off
+    assert started_off.startswith("[view_image:") and started_off.endswith("]\n")
+    switched_off = BasaltBackend(Settings(basalt_root=root, basalt_vision="off")).image_input_off_note()
+    assert "switched off for Basalt" in switched_off and "Automatic or dynamic" in switched_off
+    backend = BasaltBackend(Settings(basalt_root=root))
+    assert backend.image_input_off_note(Settings(basalt_root=root, basalt_vision="off")) == switched_off   # the caller's settings
+    _pack_with(pack, ["dense", "experts", "meta"])                    # no projector: "cannot see images" is true
+    assert BasaltBackend(Settings(basalt_root=root)).image_input_off_note() is None
+    assert BasaltBackend(Settings(basalt_root=str(tmp_path / "nowhere"))).image_input_off_note() is None
+
+
 def test_strata_answers_the_same_question_from_its_configs_model_name(tmp_path):
     root = tmp_path / "strata"
     root.mkdir()
