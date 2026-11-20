@@ -174,7 +174,7 @@ FIELD_DESCRIPTIONS = {
     "basalt_expert_cache": "Experts kept in VRAM: auto fills the card down to the VRAM reserve, a number fixes the count.",
     "basalt_conversation_cache_mib": "RAM for parked conversations, so a side request does not cost the main one its cache. Blank is 8,192.",
     "basalt_spec": "Longest draft window, in tokens (Basalt's spec). Blank is Basalt's 8; 0 or 1 turns drafting off.",
-    "basalt_vision": "Image input: off, dynamic (inside the engine, no VRAM at rest) or cpu (slow). Blank is off.",
+    "basalt_vision": "Image input: off, dynamic (inside the engine, no VRAM at rest) or cpu (slow). Blank is dynamic when the pack has an image projector, else off.",
     "basalt_extra_settings": "Any other Basalt setting, as a JSON object. The lossy ones (route-tail-skip, route-prior, relaxed-drafting) are faster and change what the model writes.",
     "tts_enabled": "Show Speak on replies; turning it off stops LiteTUI-owned playback, not LiteSuite's queue.",
     "tts_litesuite_first": "Use LiteSuite's selected voice when reachable; off uses only the fallback engine. LiteSuite owns queued playback and stopping it.",

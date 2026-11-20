@@ -34,6 +34,7 @@ from __future__ import annotations
 import json
 import os
 import shutil
+import struct
 from pathlib import Path
 
 from . import ninfer_engine, strata_engine, ttyguard
@@ -143,6 +144,12 @@ def context_for(settings) -> int:
 
 KV_CHOICES = ("fp16", "int8", "q4_0", "k8v4")
 VISION_CHOICES = ("off", "dynamic", "cpu")
+#: The section a pack holds its image projector in, and the header that lists the sections.
+VISION_SECTION = "vision/mmproj"
+_PACK_MAGIC = b"BASALTMF"
+_PACK_HEADER_BYTES = 64 << 10
+_PACK_HEADER = struct.Struct("<8sIIQ40s")
+_PACK_ENTRY = struct.Struct("<64sQQ32s16s")
 #: Basalt refuses a smaller reserve on Windows (docs/running.md, memory floors).
 VRAM_RESERVE_FLOOR_MIB = 256
 #: What LiteTUI starts Strata with too (T1306-A): RAM for parked conversations, so a side call
@@ -173,6 +180,51 @@ def extra_settings(settings) -> dict:
     if owned:
         raise ValueError(f"{EXTRA_FIELD}: {', '.join(owned)} is set by /model, not here")
     return value
+
+
+def pack_sections(pack) -> list[str]:
+    """The section names a `.basalt` file lists in its header (Basalt's tools/model_file.py: a
+    64-byte header, then one 128-byte entry per section, all inside the first 64 KiB). Empty for
+    a file that is missing, unreadable or not a pack: this only ever chooses a default."""
+    try:
+        with open(pack, "rb") as fh:
+            head = fh.read(_PACK_HEADER_BYTES)
+        magic, _version, count, _size, _pad = _PACK_HEADER.unpack_from(head, 0)
+        if magic != _PACK_MAGIC:
+            return []
+        names = []
+        for i in range(count):
+            raw = _PACK_ENTRY.unpack_from(head, _PACK_HEADER.size + i * _PACK_ENTRY.size)[0]
+            names.append(raw.rstrip(b"\0").decode("utf-8", "replace"))
+        return names
+    except (OSError, struct.error):
+        return []
+
+
+def pack_has_vision(pack) -> bool:
+    """Does the pack carry its image projector (the mmproj given to the converter)?"""
+    return VISION_SECTION in pack_sections(pack)
+
+
+def effective_vision(settings, pack) -> str | None:
+    """The `vision` value a start uses. Ryan, 2026-11-20: "turn it on in the settings by default if
+    the mmproj is present". So a chosen value always wins (an explicit off stays off), and blank is
+    `dynamic` for a pack that carries its projector; for a pack without one nothing is set, which
+    is Basalt's off."""
+    chosen = getattr(settings, "basalt_vision", None)
+    if chosen:
+        return chosen
+    return "dynamic" if pack is not None and pack_has_vision(pack) else None
+
+
+def vision_blank_label(settings) -> str:
+    """What the blank choice of `basalt_vision` resolves to for the pack chosen now, for Settings."""
+    pack = basalt_pack(settings)
+    if pack is None:
+        return "Automatic: dynamic when the pack has an image projector, else off"
+    if pack_has_vision(pack):
+        return f"Automatic: dynamic ({pack.stem} has an image projector)"
+    return f"Automatic: off ({pack.stem} has no image projector)"
 
 
 def validate(settings) -> None:
@@ -240,7 +292,7 @@ def run_config(settings, pack: Path, port: int) -> dict:
     spec = getattr(settings, "basalt_spec", None)
     if spec is not None:
         model["spec"] = spec
-    vision = getattr(settings, "basalt_vision", None)
+    vision = effective_vision(settings, pack)
     if vision:
         model["vision"] = vision
     model.update(extra_settings(settings))
