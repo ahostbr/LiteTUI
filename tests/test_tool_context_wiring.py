@@ -41,13 +41,23 @@ def app_double(tmp_path, mode, reply=None, raise_=False, convo_dir="set"):
             tool_context_mode=mode,
             tool_context_threshold_chars=2000,
             compact_max_tokens=4096,
+            lmstudio_graded_thinking_models=[],
         ),
+        # The fold asks the backend how to spell its reasoning effort (app.py
+        # `side_call_reasoning_effort`), as every real app can answer. This double
+        # had no backend, so each summarise test failed inside the fold's own
+        # try/except with an AttributeError and fell back to the mask.
+        backend=SimpleNamespace(name="custom", base_url=lambda: "http://127.0.0.1:1/v1"),
         convo_dir=(tmp_path if convo_dir == "set" else None),
         conversation=[{"role": "user", "content": "find the bug in run_all"}],
         _flatten=lambda self_or_c: self_or_c if isinstance(self_or_c, str) else "",
         client=SimpleNamespace(chat=SimpleNamespace(completions=comp)),
         model_id="m",
     )
+    # And the fold sends through model_transport.for_app, which refuses a client it has
+    # no recorded pairing for: bind this double's client to its backend as the app does.
+    from litetui import model_transport
+    ns._client_binding = model_transport.bind_client(ns.client, ns.backend)
     return ns, comp
 
 
