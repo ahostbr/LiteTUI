@@ -26,7 +26,7 @@ from litetui import model_transport
 from litetui.settings import Settings
 
 #: The backends the default `prefix_cache_backends` names. Spelled out here so a change to the default is a visible test edit.
-PREFIX_CACHE_BACKENDS = ("ninfer", "llamacpp", "strata", "xolotl", "lmstudio")
+PREFIX_CACHE_BACKENDS = ("ninfer", "llamacpp", "strata", "xolotl", "basalt", "lmstudio")
 #: Backends whose server is not ours to reason about: any OpenAI-compatible URL, a remote API, an OAuth or CLI provider.
 NOT_LISTED = ("custom", "cline", "free", "codex", "anthropic", "claude")
 
