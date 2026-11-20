@@ -184,7 +184,20 @@ def bash_exe() -> str | None:
 #:     reads from an exit code -- grep's 1-means-no-match vs 2-means-error is
 #:     the classic. $LASTEXITCODE holds the real number, so it is re-exited.
 #:  2. A FAILING CMDLET EXITS 0. It is a non-terminating error, not a failed
-#:     exit. The $Error.Count delta below turns it into exit 1.
+#:     exit. Clause 3 is what turns it into exit 1 now: under 'Stop' the error
+#:     ends the block, the `if` below is never reached, and pwsh itself exits 1.
+#:     🔴 IT USED TO BE A `$Error.Count` DELTA, AND THAT WAS WRONG ONCE CLAUSE 3
+#:     EXISTED. `$Error` also records every error the command HANDLED: a
+#:     try/catch, `-ErrorAction SilentlyContinue`, a caught .NET exception. With
+#:     'Stop' in force an unhandled error never reaches the check at all, so the
+#:     delta could ONLY ever fire for handled ones, and it marked a command that
+#:     had dealt with its own error as failed (RustSuite, 2026-11-20: `New-Item`
+#:     on an existing lock file inside try/catch, exit 0 from the last native
+#:     command, reported as exit 1). Measured over 15 commands
+#:     (tests/test_powershell_tool.py): handled -> 0, unhandled -> 1, native
+#:     codes intact. Ceiling: a command that itself asks to go on past an error
+#:     (`$ErrorActionPreference='Continue'`, `-ErrorAction Continue`) now exits
+#:     0 with the error text on stderr, as PowerShell itself would.
 #:  3. 🔴 A FAILED STATEMENT MUST STOP THE REST (T1026). This used to be
 #:     refused as changing the user's command too much, and the price of NOT
 #:     paying it was measured on 2026-09-26: `$home='<scratch>'; Remove-Item
@@ -204,10 +217,8 @@ def bash_exe() -> str | None:
 #: OutputRendering kills ANSI at the source rather than stripping it later.
 PS_WRAPPER = (
     "$PSStyle.OutputRendering='PlainText'; $global:LASTEXITCODE=0; "
-    "$__e=$Error.Count; "
     "& {{ $ErrorActionPreference='Stop'; {command} }}; "
-    "if ($LASTEXITCODE) {{ exit $LASTEXITCODE }} "
-    "elseif ($Error.Count -gt $__e) {{ exit 1 }} else {{ exit 0 }}"
+    "if ($LASTEXITCODE) {{ exit $LASTEXITCODE }} else {{ exit 0 }}"
 )
 
 
