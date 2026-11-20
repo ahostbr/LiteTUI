@@ -22,32 +22,36 @@ from litetui import tool_schemas
 from litetui.tool_policy import READ_POLICY
 
 VIEW_IMAGE_TOOL_SPEC = tool_schemas.load("view_image")
+#: The file types this tool opens (app._tool_view_image refuses the rest by name).
+IMAGE_SUFFIXES = (".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp")
+
+
+def run(app, args: dict) -> str:
+    """The one door a model opens an image file through: `view_image`, and `read` on a
+    picture (core_tools routes it here, T1371)."""
+    # Only a model KNOWN to be text-only takes the report path. Unknown
+    # (None) keeps today's behaviour: the staging path reports its own
+    # precondition. `compare_to` belongs to the report path alone.
+    if app.model_type == "llm":
+        from litetui import image_describe
+        out = image_describe.describe_tool(args)
+        # A backend that knows WHY its model is text-only right now (Basalt started with
+        # image input off although the pack has a projector) says so, and what to do,
+        # in place of "this model cannot see images".
+        why = getattr(getattr(app, "backend", None), "image_input_off_note", None)
+        note = why(getattr(app, "settings", None)) if callable(why) else None
+        if note and out.startswith(image_describe.NOTE):
+            out = note + out[len(image_describe.NOTE):]
+        return out
+    return app._tool_view_image(args)
 
 
 def _register(ctx) -> None:
     app = ctx.app
-
-    def _run(args: dict) -> str:
-        # Only a model KNOWN to be text-only takes the report path. Unknown
-        # (None) keeps today's behaviour: the staging path reports its own
-        # precondition. `compare_to` belongs to the report path alone.
-        if app.model_type == "llm":
-            from litetui import image_describe
-            out = image_describe.describe_tool(args)
-            # A backend that knows WHY its model is text-only right now (Basalt started with
-            # image input off although the pack has a projector) says so, and what to do,
-            # in place of "this model cannot see images".
-            why = getattr(getattr(app, "backend", None), "image_input_off_note", None)
-            note = why(getattr(app, "settings", None)) if callable(why) else None
-            if note and out.startswith(image_describe.NOTE):
-                out = note + out[len(image_describe.NOTE):]
-            return out
-        return app._tool_view_image(args)
-
     # Always offered (T1319): there is a useful answer for every model, so the
     # tool array no longer depends on model_type, which also keeps the prompt
     # prefix identical across a /model switch (T1306-D).
-    ctx.tool(VIEW_IMAGE_TOOL_SPEC, _run, policy=READ_POLICY)
+    ctx.tool(VIEW_IMAGE_TOOL_SPEC, lambda args: run(app, args), policy=READ_POLICY)
 
 
 PLUGIN = PluginManifest(id="view-image", register=_register)

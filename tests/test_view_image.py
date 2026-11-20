@@ -137,6 +137,49 @@ a = FakeApp("vlm")
 a.backend = type("B", (), {"image_input_off_note": lambda self, settings=None: WHY})()
 chk("a model that can see is untouched: the picture is staged", "next message" in run(a, {"path": str(img)}))
 
+print("\n=== 🔴 T1371: `read` on a picture opens the picture, it does not say 'use bash' ===")
+# Ryan's Basalt seat had images on and view_image in its tool list. It called `read` on a
+# .jpg first, was told "[binary file ... use bash to inspect]", and never saw the picture.
+from litetui.plugins import PluginContext as _Ctx
+from litetui.plugins import core_tools as _core
+
+
+def with_read(app):
+    _core.PLUGIN.register(_Ctx(app, app.plugins, "core-tools"))
+    return app
+
+
+a = with_read(FakeApp("vlm"))
+out = a._dispatch_for("read")({"path": str(img)})
+chk("vlm: read on a .png stages the picture", len(a._pending_tool_images) == 1 and a._pending_tool_images[0][0] == str(img))
+chk("...and answers like view_image: look in the next message", "next message" in out)
+chk("...never the old dead end", "binary file" not in out and "use bash" not in out)
+a = with_read(FakeApp(None))
+chk("unknown model type: read on a picture still tries to attach it",
+    "next message" in a._dispatch_for("read")({"path": f'"{img}"'}) and len(a._pending_tool_images) == 1)
+a = with_read(FakeApp("llm"))
+out = a._dispatch_for("read")({"path": str(img)})
+from litetui import image_describe as _describe
+chk("llm: read on a picture gives the measurement report", out.startswith(_describe.NOTE) and "64x48 px" in out)
+chk("...and stages nothing", a._pending_tool_images == [])
+note = TMP / "note.txt"
+note.write_text("line one\nline two\n", encoding="utf-8")
+a = with_read(FakeApp("vlm"))
+chk("a text file is read as text, as before", "line two" in a._dispatch_for("read")({"path": str(note)}))
+blob = TMP / "blob.bin"
+blob.write_bytes(b"\x00\x01\x02" * 50)
+chk("a binary file that is not a picture keeps its own answer", a._dispatch_for("read")({"path": str(blob)}).startswith("[binary file"))
+fake_png = TMP / "not-really.png"
+fake_png.write_bytes(b"\x00\x01 this is not an image")
+out = a._dispatch_for("read")({"path": str(fake_png)})
+chk("a .png that does not decode is an [error], not a crash and not a staged image",
+    out.startswith("[error]") and a._pending_tool_images == [])
+chk("a missing .png is still 'file not found'", "file not found" in a._dispatch_for("read")({"path": str(TMP / "gone.png")}))
+a = with_read(FakeApp("vlm"))
+a.plugins.tools_disabled = lambda: frozenset({"view_image"})
+chk("view_image switched off in the tool list: read does not bring it back",
+    a._dispatch_for("read")({"path": str(img)}).startswith("[binary file") and a._pending_tool_images == [])
+
 print("\n=== bad input never raises, always explains ===")
 a = FakeApp("vlm")
 for label, args in [
