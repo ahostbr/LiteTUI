@@ -68,5 +68,22 @@ class BasaltBackend(StrataBackend):
 
     # -- capabilities ------------------------------------------------------------
 
+    def image_input_off_note(self, settings=None) -> str | None:
+        """The first line `view_image` gives a model when this server says it takes text only but
+        the chosen pack carries its image projector, or None when the pack has none (then "this
+        model cannot see images" is simply true). Ryan, 2026-11-20: his server had been started
+        with images off and the report read as a broken tool; it has to say what to do."""
+        settings = self._settings if settings is None else settings
+        pack = basalt_engine.basalt_pack(settings)
+        if pack is None or not basalt_engine.pack_has_vision(pack):
+            return None
+        if basalt_engine.effective_vision(settings, pack) == "off":
+            return ("[view_image: image input is switched off for Basalt (Settings > Basalt > image input), so "
+                    "this is a measurement report (colours, shapes, positions), not the picture. The pack has its "
+                    "image projector: set image input to Automatic or dynamic, then /engine stop and /engine start.]\n")
+        return ("[view_image: this Basalt server was started with image input off, so this is a measurement report "
+                "(colours, shapes, positions), not the picture. The pack has its image projector and a new start "
+                "turns image input on: /engine stop, then /engine start.]\n")
+
     def reasoning_levels(self, model: str | None = None) -> list[str]:
         return list(BASALT_REASONING_LEVELS)

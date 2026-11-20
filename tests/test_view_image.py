@@ -112,6 +112,31 @@ chk("None   -> offered (unknown is not 'no')", "view_image" in names(FakeApp(Non
 chk("🔴 llm -> offered too (was NOT offered before T1319)", "view_image" in names(FakeApp("llm")))
 chk("dispatch resolves it", FakeApp("vlm")._dispatch_for("view_image") is not None)
 
+print("\n=== a text-only model gets the report, and a backend that knows why says so ===")
+from litetui import image_describe
+
+run = lambda app, args: app._dispatch_for("view_image")(args)
+a = FakeApp("llm")
+out = run(a, {"path": str(img)})
+chk("no backend opinion -> the plain 'cannot see images' header", out.startswith(image_describe.NOTE))
+chk("...and nothing is staged", a._pending_tool_images == [])
+WHY = "[view_image: this server was started with image input off: /engine stop, then /engine start.]\n"
+a = FakeApp("llm")
+a.settings = object()
+a.backend = type("B", (), {"image_input_off_note": lambda self, settings=None: WHY})()
+out = run(a, {"path": str(img)})
+chk("🔴 a backend that knows why replaces the header with what to do", out.startswith(WHY))
+chk("...the old header is gone, the measurements stay",
+    "this model cannot see images" not in out and "64x48 px" in out)
+a.backend = type("B", (), {"image_input_off_note": lambda self, settings=None: None})()
+chk("a backend with nothing to add keeps the plain header", run(a, {"path": str(img)}).startswith(image_describe.NOTE))
+a.backend = type("B", (), {"image_input_off_note": lambda self, settings=None: WHY})()
+chk("an [error] result is never given the header",
+    run(a, {"path": str(TMP / "nope.png")}).startswith("[error]"))
+a = FakeApp("vlm")
+a.backend = type("B", (), {"image_input_off_note": lambda self, settings=None: WHY})()
+chk("a model that can see is untouched: the picture is staged", "next message" in run(a, {"path": str(img)}))
+
 print("\n=== bad input never raises, always explains ===")
 a = FakeApp("vlm")
 for label, args in [

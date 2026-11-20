@@ -33,7 +33,15 @@ def _register(ctx) -> None:
         # precondition. `compare_to` belongs to the report path alone.
         if app.model_type == "llm":
             from litetui import image_describe
-            return image_describe.describe_tool(args)
+            out = image_describe.describe_tool(args)
+            # A backend that knows WHY its model is text-only right now (Basalt started with
+            # image input off although the pack has a projector) says so, and what to do,
+            # in place of "this model cannot see images".
+            why = getattr(getattr(app, "backend", None), "image_input_off_note", None)
+            note = why(getattr(app, "settings", None)) if callable(why) else None
+            if note and out.startswith(image_describe.NOTE):
+                out = note + out[len(image_describe.NOTE):]
+            return out
         return app._tool_view_image(args)
 
     # Always offered (T1319): there is a useful answer for every model, so the
