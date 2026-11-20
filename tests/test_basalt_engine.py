@@ -95,6 +95,26 @@ def test_a_model_is_a_pack_file_one_is_chosen_two_are_not_guessed(tmp_path):
     assert eng.basalt_pack(settings) == second
 
 
+def test_a_second_packs_folder_is_listed_with_the_installs_own(tmp_path):
+    """Ryan keeps a second pack on another drive: `/model` lists both, and neither is guessed."""
+    settings, (own,) = _install(tmp_path, "Qwen3.8-FN-GSQ-IQ3_S")
+    other = tmp_path / "another-drive" / "basalt"
+    settings.basalt_packs_dir = str(other)                         # named but not there yet: no error
+    assert eng.list_packs(settings) == [own] and eng.basalt_pack(settings) == own
+    other.mkdir(parents=True)
+    second = other / "Qwen3.8-FN-Uncensored-IQ3_XXS.basalt"
+    second.write_bytes(b"BASALTMF")
+    (other / "half.basalt.partial").write_bytes(b"x")
+    assert eng.list_configs(settings) == sorted([own, second])
+    assert eng.chosen_config(settings) is None                     # two packs and no choice
+    settings.basalt_config = str(second)
+    assert eng.basalt_pack(settings) == second
+    settings.basalt_packs_dir = str(own.parent)                    # the install's own folder named twice
+    assert eng.list_packs(settings) == [own]
+    settings.basalt_packs_dir = "   "
+    assert eng.list_packs(settings) == [own]
+
+
 def test_the_host_is_the_setting_else_port_8091(tmp_path):
     settings = _Settings()
     assert eng.default_host(settings) == "http://127.0.0.1:8091"

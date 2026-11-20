@@ -107,7 +107,7 @@ def test_every_table_that_names_the_local_engines_names_basalt():
     assert "basalt" in subagent_local.LOADS_ON_REQUEST
     assert "basalt" in Settings().prefix_cache_backends
     fields = [name for name in SETTING_SPECS if name.startswith("basalt_")]
-    assert len(fields) == 11
+    assert len(fields) == 12
     for name in fields:
         spec = SETTING_SPECS[name]
         if name == "basalt_host":      # where to connect: per conversation, applied by a reconnect
@@ -297,7 +297,7 @@ def test_strata_answers_the_same_question_from_its_configs_model_name(tmp_path):
 
 # ── the Settings dialog ──────────────────────────────────────────────────────
 
-BASALT_FIELDS = ("basalt_host", "basalt_root", "basalt_config", "basalt_max_context", "basalt_kv",
+BASALT_FIELDS = ("basalt_host", "basalt_root", "basalt_config", "basalt_packs_dir", "basalt_max_context", "basalt_kv",
                  "basalt_vram_reserve_mib", "basalt_expert_cache", "basalt_conversation_cache_mib",
                  "basalt_spec", "basalt_vision", "basalt_extra_settings")
 
@@ -328,7 +328,8 @@ async def test_the_dialog_has_a_control_for_every_basalt_field_and_saves_them_ty
         for name in BASALT_FIELDS:
             body.query_one(f"#f-{name}")
         untouched = body._collect()
-        assert [getattr(untouched, name) for name in BASALT_FIELDS] == ["", "", "", None, None, None, None, None, None, None, None]
+        assert [getattr(untouched, name) for name in BASALT_FIELDS] == ["", "", "", "", None, None, None, None, None, None, None, None]
+        body.query_one("#f-basalt_packs_dir", Input).value = "G:/Models/litesuite/basalt"
         body.query_one("#f-basalt_max_context", Input).value = "150000"
         body.query_one("#f-basalt_kv", Select).value = "k8v4"
         body.query_one("#f-basalt_vram_reserve_mib", Input).value = "2000"
@@ -338,6 +339,7 @@ async def test_the_dialog_has_a_control_for_every_basalt_field_and_saves_them_ty
         out = body._collect()
     assert (out.basalt_max_context, out.basalt_kv, out.basalt_vram_reserve_mib, out.basalt_expert_cache,
             out.basalt_vision, out.basalt_extra_settings) == (150000, "k8v4", 2000, "auto", "dynamic", '{"prefill": "auto:16384"}')
+    assert out.basalt_packs_dir == "G:/Models/litesuite/basalt"
 
 
 @pytest.mark.asyncio

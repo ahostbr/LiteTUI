@@ -167,6 +167,7 @@ FIELD_DESCRIPTIONS = {
     "basalt_host": "Address of a Basalt server started separately; blank uses port 8091 on this PC.",
     "basalt_root": "The Basalt install (bin, serve, .venv and a packs folder); blank uses ~/.litesuite/llm/basalt.",
     "basalt_config": "The .basalt pack served at the next Basalt engine start; blank uses the one pack the install holds.",
+    "basalt_packs_dir": "A second folder of .basalt packs, such as one on another drive; /model lists its packs with the install's own.",
     "basalt_max_context": "Context tokens Basalt is started with; blank is 131,072. Up to 262,144.",
     "basalt_kv": "How the KV cache is stored: fp16, int8, q4_0 or k8v4. Blank is int8 above 8,192 tokens of context.",
     "basalt_vram_reserve_mib": "VRAM Basalt leaves free for other programs; the expert cache gets the rest. Blank is Basalt's 700.",
@@ -415,7 +416,7 @@ SETTINGS_SECTIONS: tuple[SettingsSectionSpec, ...] = (
     _section(
         "basalt", "Basalt", "basalt-engine", "Engine",
         "Qwen3.8-Flash-Next on an RTX 50 card plus system RAM (github.com/jesdga95/basalt).",
-        ("basalt_host", "basalt_root", "basalt_config", "basalt_max_context"), scope="device", keywords=("Flash-Next", "engine", "RTX 50", "Blackwell", "context", "pack"),
+        ("basalt_host", "basalt_root", "basalt_config", "basalt_packs_dir", "basalt_max_context"), scope="device", keywords=("Flash-Next", "engine", "RTX 50", "Blackwell", "context", "pack"),
     ),
     _section(
         "basalt", "Basalt", "basalt-load", "Load options",

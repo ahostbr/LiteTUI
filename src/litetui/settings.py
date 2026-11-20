@@ -279,6 +279,8 @@ class Settings:
     basalt_host: str = ""
     basalt_root: str = ""
     basalt_config: str = ""
+    #: A second folder of .basalt packs (another drive); /model lists it with the install's own.
+    basalt_packs_dir: str = ""
     basalt_max_context: int | None = None
     #: The load options that matter (basalt_engine.run_config); blank leaves Basalt's default.
     basalt_kv: str | None = None
