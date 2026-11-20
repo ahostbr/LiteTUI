@@ -56,9 +56,58 @@ def test_an_explicit_exit_survives() -> None:
 
 
 def test_a_failing_cmdlet_reports_failure() -> None:
-    """Exits 0 without the $Error.Count check — a silent success on an error."""
+    """Plain `pwsh -Command` exits 0 here: a silent success on an error. The wrapper's
+    `$ErrorActionPreference='Stop'` is what makes it exit 1."""
     out = _run("Get-Item C:\\nope\\nope\\nope")
     assert "code 1" in out, f"a failing cmdlet reported success: {out!r}"
+    assert "Cannot find path" in out, f"the error text must reach the model: {out!r}"
+
+
+def test_an_uncaught_error_stops_the_rest_and_fails() -> None:
+    """T1026: the statement after a failed one must not run."""
+    out = _run("Get-Item C:\\nope\\nope\\nope; Write-Output AFTER-THE-ERROR")
+    assert "code 1" in out and "AFTER-THE-ERROR" not in out, out
+    assert "code 1" in _run("throw 'boom'")
+
+
+# ── an error the command HANDLED is not a failed command (RustSuite, 2026-11-20) ──
+#
+# 🔴 The wrapper used to compare `$Error.Count` before and after. `$Error` also records
+# errors that were caught, and under 'Stop' an uncaught one never reaches that check, so it
+# could only ever fire for handled errors: a command that dealt with its own error and whose
+# last native command exited 0 was reported as "exited with code 1".
+
+def test_an_error_caught_by_try_catch_is_success(tmp_path) -> None:
+    """The reported case: New-Item on a lock file that exists (IOException 0x80070050)."""
+    lock = tmp_path / "held.lock"
+    lock.write_text("", encoding="utf-8")
+    out = _run(f"try {{ New-Item -ItemType File -Path '{lock}' -ErrorAction Stop | Out-Null }} "
+               "catch { Write-Output 'lock is held, handled' }; cmd /c exit 0")
+    assert "lock is held, handled" in out
+    assert "exited with code" not in out, f"a caught error marked the command failed: {out!r}"
+
+
+@pytest.mark.parametrize("command", [
+    "Get-Item C:\\nope\\nope -ErrorAction SilentlyContinue; Write-Output went-on",
+    "try { [int]::Parse('x') } catch { Write-Output went-on }",
+    "try { throw 'x' } catch { Write-Output went-on }",
+])
+def test_a_silenced_or_caught_error_is_success(command) -> None:
+    out = _run(command)
+    assert "went-on" in out and "exited with code" not in out, out
+
+
+def test_a_native_failure_after_a_caught_error_still_fails_with_its_own_code() -> None:
+    out = _run("try { throw 'x' } catch { Write-Output handled }; cmd /c exit 3")
+    assert "handled" in out and "code 3" in out, out
+
+
+def test_a_command_that_asks_to_go_on_past_an_error_is_not_failed_by_the_tool() -> None:
+    """The ceiling of this fix, pinned so it is a decision and not an accident: the author
+    said Continue, PowerShell goes on, the error text is still shown, the exit is 0."""
+    out = _run("Write-Error 'reported and passed' -ErrorAction Continue; Write-Output AFTER")
+    assert "AFTER" in out and "reported and passed" in out
+    assert "exited with code" not in out, out
 
 
 def test_success_is_success() -> None:
