@@ -270,6 +270,46 @@ async def test_the_buttons_answer_a_real_MOUSE_CLICK_in_the_sidebar() -> None:
     assert got == [DENIED], f"the click did not deny; got {got}"
 
 
+# ── a blind Enter refuses (Sentinel 18e3a479: "put Deny back as first focus") ──
+#
+# 🔴 The dialog's own docstring promised this and it had stopped being true: the swap button,
+# added later, was composed ahead of the buttons and took first focus, so Enter on a dialog
+# that had just appeared moved it to the other host. Tab+Enter was Deny, not Enter.
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("style", ["sidebar", "modal"])
+async def test_the_dialog_opens_on_Deny_and_a_blind_Enter_refuses(style) -> None:
+    a = make_app()
+    async with a.run_test(size=(120, 40)) as pilot:
+        ctrl, got = await _open(a, pilot, style)
+        assert getattr(a.screen.focused, "id", None) == "tool-approval-deny", (
+            f"first focus is {getattr(a.screen.focused, 'id', None)!r} in the {style} host")
+        await pilot.press("enter")
+        for _ in range(6):
+            await pilot.pause()
+    assert got == [DENIED], f"a blind Enter must refuse in the {style} host; got {got}"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("style", ["sidebar", "modal"])
+async def test_tab_walks_Deny_Allow_once_Always_allow_then_the_swap_button(style) -> None:
+    a = make_app()
+    async with a.run_test(size=(120, 40)) as pilot:
+        ctrl, got = await _open(a, pilot, style)
+        seen = [getattr(a.screen.focused, "id", None)]
+        for _ in range(4):
+            await pilot.press("tab")
+            await pilot.pause()
+            seen.append(getattr(a.screen.focused, "id", None))
+        assert seen == [*BUTTONS, "dialog-swap", "tool-approval-deny"], seen
+        await pilot.press("tab")                       # Deny -> Allow once
+        await pilot.pause()
+        await pilot.press("enter")
+        for _ in range(6):
+            await pilot.pause()
+    assert got == [ONCE], f"Tab then Enter is Allow once in the {style} host; got {got}"
+
+
 # ── a long argument must never cost the buttons (Ryan, 2026-11-20) ──────────
 #
 # 🔴 "accept tool model is cut off i have no way to click or accept it ..both in modal
