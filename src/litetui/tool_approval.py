@@ -320,11 +320,18 @@ class ToolApprovalBody(Vertical):
             markup=False,
             id="tool-approval-hint",
         )
-        yield SwapButton()
+        # 🔴 THE ANSWER ROW IS COMPOSED BEFORE THE SWAP BUTTON, so Deny is the first thing
+        # that can take focus and a blind Enter on a dialog that appeared mid-turn REFUSES.
+        # The swap button was added later and composed ahead of this row; it took first
+        # focus, and a blind Enter moved the dialog to the other host instead (measured
+        # 2026-11-20). The row is docked to the bottom, so its place in this list decides
+        # only the focus order (Deny, Allow once, Always allow, then the swap button), not
+        # where anything is drawn.
         with Horizontal(id="tool-approval-actions"):
             yield Button("Deny", id="tool-approval-deny")
             yield Button("Allow once", variant="warning", id="tool-approval-allow")
             yield Button("Always allow", variant="error", id="tool-approval-always")
+        yield SwapButton()
 
     # ── state carry across a live host swap ──────────────────────────────────
     def get_state(self) -> dict:
