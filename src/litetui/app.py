@@ -7197,7 +7197,7 @@ class LiteTUI(App):
             self._report_spawner_error(str(message), "notification")
         return super().notify(message, severity=severity, markup=markup, **kwargs)
 
-    def system_message(self, text: str) -> None:
+    def system_message(self, text: str, _until: float | None = None) -> None:
         """Post a system line into the chat log — **the supported way for a
         plugin to say something to the user.**
 
@@ -7219,11 +7219,25 @@ class LiteTUI(App):
         **in scope** to replace it with. Ask "is X reachable from every call
         site?" before scheduling any "seal it behind X" step.
         """
+        # A worker can speak before the first screen is attached: `_apply_cli_args` starts in
+        # on_mount and, when it has nothing to wait for (a refused --model, an unsupported
+        # thinking level), reports at once. Mounting into a log that is not attached raises
+        # MountError, which fails the worker and takes the app down at launch. Measured
+        # 2026-11-20: tests/test_approval_over_rpc.py::test_deny_and_remember_survive_the_wire
+        # failed 2 runs in 12 on exactly that. So the line waits for the log, up to 10 s (an app
+        # that is going down never attaches it again, and the wait must end).
+        log = next(iter(self.query("#chat-log")), None)
+        if log is None or not log.is_attached:
+            until = time.monotonic() + 10.0 if _until is None else _until
+            if time.monotonic() < until:
+                # The class's own method, not `self.system_message`: an instance attribute put
+                # there by a wrapper takes one argument.
+                self.call_after_refresh(LiteTUI.system_message, self, text, until)
+            return
         if self._is_error_message(text):
             activity = "compaction" if text.startswith("Compact failed") else "system message"
             self._report_spawner_error(text, activity)
         shown = present(text, self.settings.error_message_style)
-        log = self.query_one("#chat-log")
         log.mount(ChatMessage(Text(shown), classes="system-msg"))
         self._scroll_down()
 
