@@ -161,6 +161,51 @@ def test_every_load_option_lands_under_basalts_own_key(tmp_path):
     assert eng.run_config(settings, pack, 8091)["models"][0]["expert-cache"] == "auto"
 
 
+def _write_pack(path, sections):
+    """A file with a real `.basalt` header (Basalt's tools/model_file.py layout) and no payload."""
+    import struct
+    head = struct.pack("<8sIIQ40s", b"BASALTMF", 2, len(sections), 64 << 10, b"")
+    head += b"".join(struct.pack("<64sQQ32s16s", name.encode(), 0, 0, b"", b"") for name in sections)
+    path.write_bytes(head.ljust(64 << 10, b"\0"))
+
+
+def test_blank_vision_is_on_for_a_pack_with_its_projector_and_an_explicit_off_wins(tmp_path):
+    """Ryan, 2026-11-20: "turn it on in the settings by default if the mmproj is present"."""
+    settings, (pack,) = _install(tmp_path, "with-eyes")
+    _write_pack(pack, ["tokenizer/vocab.json", "dense", "experts", "vision/mmproj", "vision/text_vocab", "meta"])
+    blind = pack.with_name("no-eyes.basalt")
+    _write_pack(blind, ["tokenizer/vocab.json", "dense", "experts", "meta"])
+    assert eng.pack_sections(pack)[3] == "vision/mmproj" and eng.pack_has_vision(pack)
+    assert not eng.pack_has_vision(blind)
+
+    assert eng.run_config(settings, pack, 8091)["models"][0]["vision"] == "dynamic"      # blank, projector there
+    assert "vision" not in eng.run_config(settings, blind, 8091)["models"][0]           # blank, none: Basalt's off
+    settings.basalt_vision = "off"
+    assert eng.run_config(settings, pack, 8091)["models"][0]["vision"] == "off"         # the user's off wins
+    settings.basalt_vision = "cpu"
+    assert eng.run_config(settings, pack, 8091)["models"][0]["vision"] == "cpu"
+    assert eng.run_config(settings, blind, 8091)["models"][0]["vision"] == "cpu"        # a choice is never rewritten
+
+
+def test_a_file_that_is_not_a_readable_pack_never_turns_vision_on(tmp_path):
+    settings, (pack,) = _install(tmp_path, "m")                       # 8 bytes: the magic and nothing else
+    assert eng.pack_sections(pack) == [] and not eng.pack_has_vision(pack)
+    assert not eng.pack_has_vision(tmp_path / "gone.basalt")
+    other = pack.with_name("other.basalt")
+    other.write_bytes(b"NOTBASALT" + b"vision/mmproj".ljust(4096, b"\0"))    # the name alone is not a section
+    assert not eng.pack_has_vision(other)
+    assert eng.effective_vision(settings, pack) is None and eng.effective_vision(settings, None) is None
+
+
+def test_settings_says_what_blank_vision_means_for_the_chosen_pack(tmp_path):
+    settings, (pack,) = _install(tmp_path, "Qwen3.8-FN-IQ3_S")
+    assert eng.vision_blank_label(settings) == "Automatic: off (Qwen3.8-FN-IQ3_S has no image projector)"
+    _write_pack(pack, ["dense", "vision/mmproj", "meta"])
+    assert eng.vision_blank_label(settings) == "Automatic: dynamic (Qwen3.8-FN-IQ3_S has an image projector)"
+    _write_pack(pack.with_name("second.basalt"), ["dense", "meta"])   # two packs and no choice: no pack to read
+    assert eng.vision_blank_label(settings) == "Automatic: dynamic when the pack has an image projector, else off"
+
+
 @pytest.mark.parametrize("field,value,words", [
     ("basalt_kv", "int4", "basalt_kv: choose one of fp16, int8, q4_0, k8v4"),
     ("basalt_vision", "gpu", "basalt_vision: choose one of off, dynamic, cpu"),

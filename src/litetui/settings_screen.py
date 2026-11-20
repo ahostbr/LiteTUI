@@ -1219,9 +1219,11 @@ class SettingsBody(Widget):
                         )
                         yield from self._optional_choice_row(
                             "basalt_vision", "Basalt: image input (vision)",
-                            basalt_engine.VISION_CHOICES, "As Basalt decides (off)",
-                            "dynamic runs the image encoder inside the engine and costs no VRAM "
-                            "at rest; cpu is slow (about a minute an image).",
+                            basalt_engine.VISION_CHOICES, basalt_engine.vision_blank_label(self._start),
+                            "Automatic turns image input on (dynamic) when the chosen pack carries "
+                            "its image projector; off always wins. dynamic runs the image encoder "
+                            "inside the engine and costs no VRAM at rest; cpu is slow (about a "
+                            "minute an image). Applies on the next /engine start.",
                         )
                         yield from self._text_row(
                             "basalt_extra_settings", "Basalt: extra settings (JSON)",
