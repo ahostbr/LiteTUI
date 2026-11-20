@@ -61,10 +61,10 @@ def _body():
     return ToolApprovalBody("bash", {"command": "echo hi"}, _decision())
 
 
-async def _open(a, pilot, style="sidebar"):
+async def _open(a, pilot, style="sidebar", body=None):
     """Open an approval and wait for it to SETTLE — not for a fixed tick count."""
     got: list = []
-    ctrl = DialogController(a, _body, style, "right")
+    ctrl = DialogController(a, body or _body, style, "right")
 
     async def _run():
         got.append(await ctrl.open())
@@ -268,3 +268,82 @@ async def test_the_buttons_answer_a_real_MOUSE_CLICK_in_the_sidebar() -> None:
         for _ in range(4):
             await pilot.pause()
     assert got == [DENIED], f"the click did not deny; got {got}"
+
+
+# ── a long argument must never cost the buttons (Ryan, 2026-11-20) ──────────
+#
+# 🔴 "accept tool model is cut off i have no way to click or accept it ..both in modal
+# and sidebar mode". A bash heredoc made the argument box tall, the box pushed the three
+# buttons past the bottom of the dialog, and a dialog whose only answer is off-screen is
+# a blocked turn. His terminal was 248x37.
+
+LONG_ARGS = {"command": "cat > /tmp/qwen_temp_sample.ps1 << 'EOF'\n" + "\n".join(
+    f"$step{i} = [math]::Ceiling($W / {i + 1}); Write-Output $step{i}" for i in range(60)
+) + "\nEOF\npowershell -NoProfile -File /tmp/qwen_temp_sample.ps1"}
+
+
+def _long_body():
+    return ToolApprovalBody("bash", LONG_ARGS, tool_policy.PolicyDecision(
+        action=tool_policy.CONFIRM,
+        profile="interactive",
+        capabilities=frozenset({"destructive_irreversible", "process_execution"}),
+        reason="human confirmation required for an unrepresented shell construct",
+    ))
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("style", ["sidebar", "modal"])
+@pytest.mark.parametrize("size", [(248, 37), (120, 30), (100, 24)])
+async def test_a_long_argument_never_pushes_the_buttons_off_screen(style, size) -> None:
+    a = make_app()
+    async with a.run_test(size=size) as pilot:
+        ctrl, got = await _open(a, pilot, style, _long_body)
+        body = a.screen.query_one(ToolApprovalBody)
+        for bid in BUTTONS:
+            btn = await _settle_clickable(pilot, a, f"#{bid}")
+            assert btn is not None, f"{bid} cannot be clicked at {size} in the {style} host"
+            r = btn.region
+            assert r.height == 3, f"{bid} is cut to {r.height} of its 3 rows at {size} in the {style} host"
+            assert r.y >= body.region.y and r.bottom <= body.region.bottom, f"{bid} hangs out of the dialog: {r} vs {body.region}"
+            assert r.bottom <= size[1] and r.right <= size[0], f"{bid} is off the terminal: {r} at {size}"
+        args = body.query_one("#tool-approval-args")
+        assert args.region.height >= 3, "the argument box must keep some rows: it is what is being approved"
+        await pilot.click("#tool-approval-allow")
+        for _ in range(4):
+            await pilot.pause()
+    assert got == [ONCE], f"the click on Allow once did not answer at {size} in the {style} host; got {got}"
+
+
+def _tall_body():
+    """Three long fields: the preview runs to its 1,800-character cap, more rows than the box shows."""
+    args = {name: " ".join(f"{name}{i}" for i in range(140)) for name in ("alpha", "beta", "gamma")}
+    return ToolApprovalBody("write_file", args, _decision())
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("style", ["sidebar", "modal"])
+async def test_the_rest_of_a_tall_argument_is_reached_by_scrolling_its_own_box(style) -> None:
+    """🔴 The box was a Static with `overflow-y: auto`, and a Static does not scroll: past its
+    20 rows the argument was CUT, silently. What is approved must be readable to its end."""
+    a = make_app()
+    async with a.run_test(size=(248, 37)) as pilot:
+        ctrl, got = await _open(a, pilot, style, _tall_body)
+        box = a.screen.query_one("#tool-approval-args")
+        for _ in range(6):
+            await pilot.pause()
+        assert box.max_scroll_y > 0, "the argument is taller than its box, so the box must scroll"
+        assert box.virtual_size.height > box.size.height, "the whole preview is in the box, not a cut copy"
+        focused = a.screen.focused
+        assert focused is not box, "the box takes no focus: Tab still walks the buttons only"
+        a.screen.query_one("#tool-approval-deny").focus()
+        await pilot.pause()
+        await pilot.press("pagedown")
+        for _ in range(4):
+            await pilot.pause()
+        assert box.scroll_offset.y > 0, "PageDown from a button scrolls the argument"
+        for bid in BUTTONS:                               # and the buttons did not move away
+            assert await _settle_clickable(pilot, a, f"#{bid}") is not None, bid
+        await pilot.press("escape")
+        for _ in range(4):
+            await pilot.pause()
+    assert got in ([DENIED], [None]), f"escape must not approve; got {got}"

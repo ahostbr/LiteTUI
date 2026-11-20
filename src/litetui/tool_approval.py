@@ -8,7 +8,7 @@ from uuid import uuid4
 from textual import on
 from textual.app import ComposeResult
 from textual.binding import Binding
-from textual.containers import Horizontal, Vertical
+from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.screen import ModalScreen
 from textual.widgets import Button, Static
 
@@ -186,6 +186,12 @@ class ToolApprovalBody(Vertical):
         border: round $warning;
         background: $surface;
         layout: vertical;
+        /* Everything above the buttons scrolls when the dialog is too short for
+           it; the buttons are docked (below) and never scroll away. */
+        overflow-y: auto;
+        /* The scrollbar's columns are always reserved, so the width the buttons
+           get does not change when the scrollbar comes and goes. */
+        scrollbar-gutter: stable;
     }
     #tool-approval-title {
         color: $warning;
@@ -196,31 +202,96 @@ class ToolApprovalBody(Vertical):
         color: $text-muted;
         margin-bottom: 1;
     }
+    /* 🔴 A REAL SCROLL BOX. This was a Static with `overflow-y: auto`, and a Static
+       does not scroll: past 20 rows the argument was simply CUT, with nothing to
+       show there was more. The text now sits in a VerticalScroll. */
     #tool-approval-args {
         height: auto;
         max-height: 20;
         padding: 1;
         background: $surface-darken-1;
         color: $text;
-        overflow-y: auto;
     }
+    #tool-approval-args-text { height: auto; }
     #tool-approval-hint {
         color: $text-muted;
         margin-top: 1;
     }
+    /* 🔴 DOCKED, so a tall argument can never push the answer off the dialog (Ryan,
+       2026-11-20: "accept tool model is cut off i have no way to click or accept
+       it ..both in modal and sidebar mode"). The top padding is the gap the old
+       margin gave, painted, so scrolled text does not show through it. */
     #tool-approval-actions {
+        dock: bottom;
         height: auto;
-        margin-top: 1;
+        padding-top: 1;
+        background: $surface;
         align-horizontal: right;
     }
     #tool-approval-actions Button { margin-left: 1; }
+    /* Too narrow for three buttons side by side (a sidebar strip, a small terminal):
+       one under the other, each the full width, so none is cut at the right edge. */
+    ToolApprovalBody.-stacked #tool-approval-actions { layout: vertical; }
+    ToolApprovalBody.-stacked #tool-approval-actions Button { width: 100%; margin-left: 0; }
     """
+
+    #: Columns the three buttons need side by side: 16 each plus their left margins.
+    ACTIONS_ROW_WIDTH = 51
+    #: The argument box: at most this tall (as before), never squeezed below this.
+    ARGS_MAX_ROWS = 20
+    ARGS_MIN_ROWS = 5
+
+    # Reach the rest of a long argument from the keyboard, whichever button has focus.
+    BINDINGS = [
+        Binding("pageup", "scroll_args(-1)", "Scroll the arguments up", show=False),
+        Binding("pagedown", "scroll_args(1)", "Scroll the arguments down", show=False),
+    ]
 
     def __init__(self, tool_name: str, args: dict, decision: PolicyDecision):
         super().__init__()
         self.tool_name = tool_name
         self.args = args
         self.decision = decision
+
+    def on_resize(self) -> None:
+        self.set_class(self.scrollable_content_region.width < self.ACTIONS_ROW_WIDTH, "-stacked")
+        self.call_after_refresh(self._fit_args)
+
+    def _fit_args(self) -> None:
+        """Give the argument box the rows that are left, so the title, the hint and the buttons
+        are all on screen without scrolling the dialog. The box keeps ARGS_MIN_ROWS at least
+        (it is what is being approved) and scrolls inside itself; only when even that does not
+        fit does the dialog scroll, and the docked buttons stay where they are.
+
+        The answer comes from the tallest the dialog MAY be (its max-height in its host), never
+        from how tall it is now, so a terminal made bigger again gives the rows back."""
+        try:
+            box = self.query_one("#tool-approval-args")
+            actions = self.query_one("#tool-approval-actions")
+        except Exception:  # noqa: BLE001 - torn down between the resize and the refresh
+            return
+        host = self.parent.size            # the screen (modal) or the side panel: what max-height is a share of
+        limit = host.height
+        cap = self.styles.max_height
+        if cap is not None:
+            limit = min(limit, int(cap.resolve(host, self.app.size)))
+        chrome = self.outer_size.height - self.scrollable_content_region.height
+        others = sum(
+            child.outer_size.height + child.styles.margin.top + child.styles.margin.bottom
+            for child in self.children if child is not box and child is not actions
+        )
+        # Counted, not measured: the row may not have been laid out again yet since
+        # `-stacked` flipped, and nothing would call this a second time when it is.
+        buttons = 3 * (3 if self.has_class("-stacked") else 1) + actions.styles.padding.top
+        rows = limit - chrome - buttons - others
+        rows = max(self.ARGS_MIN_ROWS, min(self.ARGS_MAX_ROWS, rows))
+        if box.styles.max_height is None or box.styles.max_height.value != rows:
+            box.styles.max_height = rows
+
+    def action_scroll_args(self, direction: int) -> None:
+        box = self.query_one("#tool-approval-args")
+        step = max(1, box.size.height - 1)
+        box.scroll_to(y=box.scroll_offset.y + direction * step, animate=False)
 
     def compose(self) -> ComposeResult:
         caps = " · ".join(sorted(self.decision.capabilities))
@@ -233,9 +304,12 @@ class ToolApprovalBody(Vertical):
             markup=False,
             id="tool-approval-meta",
         )
-        yield Static(
-            approval_preview(self.args), markup=False, id="tool-approval-args"
-        )
+        # Not focusable: Tab must still go Deny -> Allow once -> Always allow, and the
+        # box scrolls by wheel or by PageUp/PageDown from whichever button has focus.
+        with VerticalScroll(id="tool-approval-args", can_focus=False):
+            yield Static(
+                approval_preview(self.args), markup=False, id="tool-approval-args-text"
+            )
         # Say what "always" actually covers.  The stored rule is keyed by
         # tool AND authority, so it is much narrower than the button label
         # suggests on its own -- and a human who reads "Always allow" as

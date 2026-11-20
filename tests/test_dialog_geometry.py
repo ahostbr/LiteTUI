@@ -204,7 +204,11 @@ async def test_no_child_is_clipped_by_its_own_container(
     # `overflow-y: auto`, so its overflow is reachable, not clipped, and the
     # strict xfail XPASSes once the app really builds. It had only ever
     # "xfailed" through the unowned LiteTUI() path, which raises StoreError.
-    SHORT_SCREEN_CLIPPERS = {"picker", "tool_approval"}
+    # tool_approval left this set on 2026-11-20: that clip is what cost Ryan his Deny /
+    # Allow once / Always allow buttons ("i have no way to click or accept it"). Its
+    # buttons are docked now and the rest scrolls, so the strict xfail XPASSed, as the
+    # note above said it would. tests/test_tool_approval_sidebar.py pins the buttons.
+    SHORT_SCREEN_CLIPPERS = {"picker"}
     if h == 24 and name in SHORT_SCREEN_CLIPPERS:
         request.node.add_marker(pytest.mark.xfail(
             strict=True,
@@ -239,11 +243,11 @@ async def test_no_child_is_clipped_by_its_own_container(
             # containment there would demand that help never exceed one screen,
             # which is the opposite of the feature.
             #
-            # ⚠️ THIS RELAXES THE GATE, SO IT NEEDS ITS OWN CONTROL. The three
-            # `strict=True` xfails above are it: picker, tool_approval and
-            # ask_user_question must STILL clip at 24 rows, and pytest turns an
-            # XPASS into a failure — so an exemption wide enough to swallow
-            # those turns this file red rather than green. `#job-box` carries
+            # ⚠️ THIS RELAXES THE GATE, SO IT NEEDS ITS OWN CONTROL. The
+            # `strict=True` xfail above is it: picker must STILL clip at 24 rows
+            # (tool_approval and ask_user_question scroll now and left that set),
+            # and pytest turns an XPASS into a failure — so an exemption wide enough
+            # to swallow it turns this file red rather than green. `#job-box` carries
             # `overflow-y: auto` for exactly the reason named here (the Save
             # button scrolls into reach), so the semantics match the CSS that
             # was already written.
