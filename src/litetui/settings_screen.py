@@ -1174,6 +1174,12 @@ class SettingsBody(Widget):
                             placeholder="C:/Users/you/.litesuite/llm/basalt/packs/model.basalt",
                         )
                         yield from self._text_row(
+                            "basalt_packs_dir", "Basalt: second packs folder",
+                            "Blank is none. A folder of .basalt packs outside the install, such as "
+                            "one on another drive; /model lists its packs with the install's own.",
+                            placeholder="G:/Models/litesuite/basalt",
+                        )
+                        yield from self._text_row(
                             "basalt_max_context", "Basalt: context length (max-context)",
                             "Blank is 131,072. Up to 262,144. A longer context takes VRAM from "
                             "the expert cache, not system RAM. Applies on the next /engine start.",

@@ -13,8 +13,8 @@ own code (`spawn_server`, `terminate_owned`, the port and GPU checks):
     a release archive or a build, i.e. `bin/basalt(.exe)`, `serve/`, `tools/`, `data/` and a
     `.venv` with its requirements.
   * A MODEL IS ONE FILE. There is no `strata-<model>.json`: each `*.basalt` under the install's
-    `packs/` or `models/` folder is a prepared model, and THAT is the model list. `basalt_config`
-    names the one to serve (the setting keeps Strata's name so `/model` is one door).
+    `packs/` or `models/` folder, or in `basalt_packs_dir` (a second folder, e.g. another drive),
+    is a prepared model, and THAT is the model list. `basalt_config` names the one to serve (the setting keeps Strata's name so `/model` is one door).
   * THE RECIPE IS WRITTEN BY LITETUI. Basalt takes a version 2 JSON (`--config`); LiteTUI writes
     one beside its log from the settings (`run_config`), never into the install.
   * READY IS NOT "ANSWERING". The server prints its `ready` line and answers `/health` at once
@@ -74,13 +74,17 @@ def server_python(root: Path) -> Path:
 
 
 def list_packs(settings) -> list[Path]:
-    """Every `.basalt` file in the install's pack folders, sorted. THE MODEL LIST FOR THIS BACKEND."""
+    """Every `.basalt` file in the install's pack folders and in `basalt_packs_dir` (a second
+    folder, such as one on another drive), sorted. THE MODEL LIST FOR THIS BACKEND."""
     root = basalt_root(settings)
-    found: list[Path] = []
-    for name in PACK_DIRS:
-        folder = root / name
+    folders = [root / name for name in PACK_DIRS]
+    extra = str(getattr(settings, "basalt_packs_dir", "") or "").strip()
+    if extra:
+        folders.append(Path(extra))
+    found: set[Path] = set()
+    for folder in folders:
         if folder.is_dir():
-            found += [p for p in folder.glob("*.basalt") if p.is_file()]
+            found.update(p for p in folder.glob("*.basalt") if p.is_file())
     return sorted(found)
 
 
@@ -337,7 +341,7 @@ def launch_plan(settings) -> tuple[list[str], Path, dict, str]:
     if pack is None or read_config(pack) is None:
         raise BackendError(
             "no Basalt model chosen — /model to pick one (each .basalt file in the install's packs "
-            "folder is a prepared model), or set basalt_config.")
+            "folder or in basalt_packs_dir is a prepared model), or set basalt_config.")
     host = default_host(settings)
     port = host.rsplit(":", 1)[-1]
     if not port.isdigit():
