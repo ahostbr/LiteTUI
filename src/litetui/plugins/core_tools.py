@@ -317,6 +317,29 @@ def tool_bash(args: dict, *, agent_id: str | None = None) -> str:
     return _run_shell(command, shell=True, timeout=_timeout_arg(args), agent_id=agent_id)
 
 
+def read_file_or_image(app, args: dict) -> str:
+    """`read` as the app registers it: a picture goes through `view_image`'s own door.
+
+    🔴 `read` ON AN IMAGE USED TO ANSWER "[binary file ... use bash to inspect]", and that
+    sentence sent a model that CAN see away from the picture. Ryan's Basalt seat, 2026-11-20
+    (T1371): images were on, `view_image` was in its tool list, and it reached for `read`
+    first (as a person would), was told to use bash, and spent about 90 calls sampling pixels
+    through the shell. So an image file is now handed to view_image: the picture is attached
+    to the next message for a model that sees, and a text-only model gets the measurement
+    report. Both tools carry the same read policy. Any other file, and an image when the user
+    switched `view_image` off in the tool list, is `tool_read` as before."""
+    raw = str(args.get("path") or "").strip().strip('"').strip("'")
+    if raw:
+        from litetui.plugins import view_image
+        path = _resolve_path(raw)
+        registry = getattr(app, "plugins", None)
+        offered = registry is not None and any(e.name == "view_image" for e in registry.tools) \
+            and "view_image" not in registry.tools_disabled()
+        if offered and path.suffix.lower() in view_image.IMAGE_SUFFIXES and path.is_file():
+            return view_image.run(app, {"path": str(path)})
+    return tool_read(args)
+
+
 def tool_read(args: dict) -> str:
     raw = args.get("path") or ""
     if not raw:
@@ -479,7 +502,7 @@ def _register(ctx) -> None:
     if os.name == "nt" and powershell_exe() is not None:
         ctx.tool(powershell_spec(), partial(tool_powershell, agent_id=agent_id), policy=SHELL_POLICY)
     ctx.tool(BASH_SPEC, partial(tool_bash, agent_id=agent_id), policy=SHELL_POLICY)
-    ctx.tool(READ_SPEC, tool_read, policy=READ_POLICY)
+    ctx.tool(READ_SPEC, partial(read_file_or_image, ctx.app), policy=READ_POLICY)
     ctx.tool(WRITE_SPEC, tool_write, policy=WRITE_POLICY)
     ctx.tool(WEB_FETCH_SPEC, tool_web_fetch, policy=NETWORK_READ_POLICY)
 

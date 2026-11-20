@@ -26,10 +26,29 @@ from litetui.tool_policy import READ_POLICY
 DEFAULT_DEFERRED = frozenset({"studio", "subagent", "listen", "pccontrol"})
 
 
+def already_loaded(reg, query: str) -> list[str]:
+    """Names of tools the request ALREADY carries that the query asks for: `select:` names
+    exactly, otherwise any keyword found in the tool's name.
+
+    🔴 THIS TOOL ONLY SEARCHES WHAT IS DEFERRED, AND IT USED TO SAY SO BADLY. Ryan's Basalt seat
+    (T1371) asked for "image" and then "select:view_image" while `view_image` sat in its tool
+    list; the answers were four unrelated tools and "no deferred tool matches", which reads as
+    "there is no such tool". It then never called the tool it had."""
+    q = (query or "").strip().lower()
+    active = [s["function"]["name"] for s in reg.tool_specs()]
+    if q.startswith("select:"):
+        wanted = {w.strip() for w in q[7:].split(",") if w.strip()}
+        return [n for n in active if n.lower() in wanted]
+    words = "".join(c if c.isalnum() else " " for c in q).split()
+    return [n for n in active if n != "tool_search" and any(w in n.lower() for w in words)][:8]
+
+
 def _run(reg, args: dict, mcp=None) -> str:
     query = str(args.get("query") or "").strip()
     if not query:
         return "[error] tool_search: a query is required (keywords, or select:<name>)"
+    have = already_loaded(reg, query)          # before the search: a hit below becomes active too
+    ready = (f"Already loaded, call directly (no search needed): {', '.join(have)}. " if have else "")
     before = (set(reg.activated), set(reg.withheld), list(reg.activations))
     hits = reg.search_tools(query)
     if mcp is not None:
@@ -44,10 +63,10 @@ def _run(reg, args: dict, mcp=None) -> str:
         hits = reg.search_tools(query)
     if not hits:
         names = ", ".join(sorted(s["function"]["name"] for s in reg.deferred_specs())) or "(none)"
-        return f"no deferred tool matches {query!r}. Deferred names: {names}"
+        return f"{ready}no deferred tool matches {query!r}. Deferred names: {names}"
     loaded = ", ".join(s["function"]["name"] for s in hits)
     return (
-        f"Loaded {len(hits)} tool(s): {loaded}. Callable from your next turn on. Schemas:\n"
+        f"{ready}Loaded {len(hits)} tool(s): {loaded}. Callable from your next turn on. Schemas:\n"
         + json.dumps(hits, ensure_ascii=False)
     )
 
