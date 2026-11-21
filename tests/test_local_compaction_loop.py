@@ -38,7 +38,8 @@ async def test_tool_round_threshold_compacts_then_resumes_without_optional_wake(
 
     monkeypatch.setattr(app_mod.model_transport, "for_app", lambda _: SimpleNamespace(create=create))
     async with app.run_test(size=(100, 40)) as pilot:
-        app.ctx_max, app.ctx_used, app.ctx_loaded = 200_000, 160_000, True
+        # 60% at the start: the context guard leaves the first request room, and the stubbed threshold above pauses the loop.
+        app.ctx_max, app.ctx_used, app.ctx_loaded = 200_000, 120_000, True
         app._append({"role": "user", "content": "do the task"})
         app._stream()
         for _ in range(120):
@@ -85,8 +86,10 @@ async def test_a_mid_turn_context_overflow_compacts_then_resumes_instead_of_endi
 
     monkeypatch.setattr(app_mod.model_transport, "for_app", lambda _: SimpleNamespace(create=create))
     async with app.run_test(size=(100, 40)) as pilot:
-        # 79% of the window: under the 80% threshold, so only the engine's refusal can trigger the compaction.
-        app.ctx_max, app.ctx_used, app.ctx_loaded = 131_072, 104_156, True
+        # 76% of the window: under the 80% threshold, so only the engine's refusal can trigger the compaction. (The incident
+        # was at 104,156; that close to the threshold the context guard now compacts before sending, so the refusal path is
+        # reached from a little lower.)
+        app.ctx_max, app.ctx_used, app.ctx_loaded = 131_072, 100_000, True
         assert app._autocompact_due() is None
         app._append({"role": "user", "content": "do the task"})
         app._stream()

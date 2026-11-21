@@ -1730,6 +1730,11 @@ class LiteTUI(App):
         # flight; this outlives the turn so the ping can read it.
         self._turn_abandoned = False
         self._interrupted_compact_resume: tuple | None = None
+        #: Context guard: (conversation id, messages counted, tokens, the last counted message), from a request's usage.
+        self._guard_base: tuple | None = None
+        #: The prompt estimate at the last guard stop: a second stop with no smaller prompt is not compacted again.
+        self._guard_last_exit: int | None = None
+        self._guard_said = False
         # Elapsed-time display while a turn is in flight (pre-token) and while
         # tool calls run. The repaint is a task on the worker's own event loop
         # (interleaves with the stream); the display string is render_progress.
@@ -7044,6 +7049,48 @@ class LiteTUI(App):
         if not getattr(self, "ctx_loaded", False) and self.model_id:
             self._fetch_ctx_window()
 
+    def _guard_prompt_estimate(self, request_messages: list[dict], tools=None) -> int | None:
+        """Tokens the next request's prompt carries, for the context guard.
+
+        From the last request's own usage when this conversation has one: what that request left
+        in the conversation plus chars/4 of the messages added since. Otherwise chars/4 of all
+        that is sent, and never less than the meter. Images are not counted (`_msg_chars` reads
+        text), one reason the stream is watched as well as the request."""
+        conv = self.conversation
+        base = getattr(self, "_guard_base", None)
+        if base and base[0] == self.convo_id and 0 < base[1] <= len(conv) and conv[base[1] - 1] is base[3]:
+            return base[2] + (self._msg_chars(conv[base[1]:]) + 3) // 4
+        tool_chars = len(json.dumps(tools, default=str)) if tools else 0
+        estimate = (self._msg_chars(request_messages) + tool_chars + 3) // 4
+        return max(int(getattr(self, "ctx_used", 0) or 0), estimate)
+
+    def _guard_note_usage(self, usage: dict, *, kept: bool) -> None:
+        """What a finished request left in the conversation: its whole total when its reply was
+        appended, its prompt alone when nothing was (a reasoning-only reply is not resent)."""
+        tokens = usage.get("total_tokens") if kept else usage.get("prompt_tokens")
+        conv = self.conversation
+        if isinstance(tokens, (int, float)) and tokens > 0 and conv:
+            self._guard_base = (self.convo_id, len(conv), int(tokens), conv[-1])
+
+    def _guard_stop(self, prompt_tokens: int | None, *, first: bool) -> bool:
+        """A turn stopped at the context guard: say so, and answer whether to compact and resume.
+
+        False when the last guard stop left this same prompt or a larger one: compacting made no
+        room, so another round would stop the same way, and nothing more is sent."""
+        pct = self.settings.autocompact_at_percent
+        last = getattr(self, "_guard_last_exit", None)
+        self._guard_last_exit = prompt_tokens
+        if last is not None and prompt_tokens is not None and prompt_tokens >= last:
+            self._guard_last_exit = None
+            self._system(
+                f"[stopped at the {pct}% context guard again: compacting made no room (the next "
+                f"request still carries about {prompt_tokens:,} tokens). Nothing more was sent]")
+            return False
+        self._system(f"[{pct}% context guard: no room left for a reply, compacting first]" if first
+                     else f"[stopped at the {pct}% context guard, compacting]")
+        self._compact_forced = True
+        self._guard_said = True
+        return True
     def _autocompact_due(self) -> int | None:
         """The window percent when a compaction is DUE, else None. A TEST — it
         never starts one.
@@ -9518,6 +9565,35 @@ class LiteTUI(App):
             # The chat template prints the effort in the FIRST lines of the prompt ("Reasoning Effort: 50"), so a request with a
             # different effort re-reads the whole prompt. A compaction on NInfer must send this exact value.
             self._last_chat_effort = (kwargs.get("extra_body") or {}).get("reasoning_effort")
+            # Context guard (Ryan 2026-11-21): this request may not carry the context past the user's
+            # auto-compact percent. Its reply gets what is left under that line; too little left
+            # compacts first, through the same door as the pause between tool iterations.
+            guard_ceiling = guard_prompt = None
+            guard_clamped = guard_cut = False
+            if not native_loop and retry_kwargs is None:
+                guard_ceiling = TurnEngine.context_guard_ceiling(
+                    enabled=self.settings.autocompact_enabled,
+                    at_percent=self.settings.autocompact_at_percent,
+                    ctx_max=self.ctx_max, ctx_loaded=bool(getattr(self, "ctx_loaded", False)))
+                if guard_ceiling is not None:
+                    guard_prompt = self._guard_prompt_estimate(request_messages, kwargs.get("tools"))
+                guard_allowed, guard_first = TurnEngine.guarded_max_tokens(
+                    max_tokens=kwargs["max_tokens"], ceiling=guard_ceiling, prompt_tokens=guard_prompt)
+                if guard_first:
+                    self._elapsed.stop_body()
+                    self._thinking_done()
+                    try:
+                        widget.remove()
+                    except Exception:  # noqa: BLE001 - an empty bubble left behind is cosmetic
+                        pass
+                    if self._guard_stop(guard_prompt, first=True):
+                        compact_due = True
+                        break
+                    self._emit_turn_end("error", final_turn_tps, final_turn_tps_source,
+                                        error="stopped at the context guard: compacting made no room")
+                    return
+                guard_clamped = guard_allowed < kwargs["max_tokens"]
+                kwargs["max_tokens"] = guard_allowed
 
             if retry_kwargs is not None:
                 kwargs = retry_kwargs
@@ -9726,6 +9802,11 @@ class LiteTUI(App):
                             pp = _extra.get("prompt_progress")
                     if pp is not None:
                         self._eta.note_prefill(pp)
+                        if guard_ceiling is not None:
+                            try:
+                                guard_prompt = int(pp["total"])  # the engine's own count of this prompt
+                            except (KeyError, TypeError, ValueError):
+                                pass
                         # NInfer sends progress on a chunk that DOES carry a
                         # choice with an EMPTY delta (not an empty choices list),
                         # so it would fall through to record_first_delta below and
@@ -9802,6 +9883,16 @@ class LiteTUI(App):
                         if visible_delta:
                             emit_delta({"type": "text_delta", "text": visible_delta})
                         sink.show(recap_stream.visible)
+                    if TurnEngine.context_guard_hit(ceiling=guard_ceiling, prompt_tokens=guard_prompt,
+                                                    streamed_tokens=self._tps.tokens_estimate):
+                        # The reply reached the guard anyway (an engine that ignores max_tokens, or a
+                        # prompt larger than its estimate): end the stream as Esc does, keep what it wrote.
+                        guard_cut = True
+                        try:
+                            await stream.close()
+                        except Exception:
+                            pass
+                        break
                     if self._stop_requested:
                         # Checked AFTER this chunk is rendered, not before: the
                         # chunk is already in hand, and the dialog promises that
@@ -9911,6 +10002,13 @@ class LiteTUI(App):
                 if hasattr(stream, "close"):
                     await stream.close()
 
+            if guard_clamped and finish_reason == "length" and not self._stop_requested:
+                guard_cut = True  # the clamp is what ended this reply
+            if guard_cut:
+                for msg in tool_msgs.values():
+                    self._tool_end(msg)
+                    msg.remove()
+                tool_acc, tool_msgs = {}, {}
             self._elapsed.stop_body()
             # Final render of this turn's bubble. _thinking_done
             # finalizes the trace (idempotent if a content or tool token
@@ -10009,6 +10107,24 @@ class LiteTUI(App):
                 self.call_after_refresh(self._maybe_autocompact)
                 return
 
+            if request_usage is not None and not native_loop:
+                self._guard_note_usage(request_usage, kept=bool(text_full or tool_acc))
+            if guard_cut:
+                self._settle_turn_stop_line(
+                    terminal_widget,
+                    started_at=turn_started_at,
+                    final_tps=final_turn_tps,
+                    stopped=True,
+                )
+                carried = self._guard_prompt_estimate(self._request_messages(), kwargs.get("tools"))
+                if self._guard_stop(carried, first=False):
+                    compact_due = True
+                    break
+                self._emit_turn_end("error", final_turn_tps, final_turn_tps_source,
+                                    error="stopped at the context guard: compacting made no room")
+                return
+            if not native_loop:
+                self._guard_last_exit = None  # a request finished under the guard
             if not tool_acc:
                 verdict = await hook_host.completion(self, text_full or "")
                 if verdict == "retry":
@@ -10159,12 +10275,15 @@ class LiteTUI(App):
 
         if compact_due:
             pct = self._autocompact_due()
-            self._system(
-                f"[pausing at {pct}% of the window — compacting between tool"
-                " iterations, then resuming]"
-                if pct is not None
-                else "[pausing to compact between tool iterations]"
-            )
+            if getattr(self, "_guard_said", False):
+                self._guard_said = False  # the context guard already said why this turn stopped
+            else:
+                self._system(
+                    f"[pausing at {pct}% of the window — compacting between tool"
+                    " iterations, then resuming]"
+                    if pct is not None
+                    else "[pausing to compact between tool iterations]"
+                )
             self._emit_turn_end("cancelled", final_turn_tps, final_turn_tps_source)
             self._interrupted_compact_resume = (self.backend, self.convo_id, self._active_turn_started_at)
             self.call_after_refresh(self._maybe_autocompact)
@@ -11207,6 +11326,7 @@ class LiteTUI(App):
         # `deferred_busy` did not change the conversation, so the occupancy
         # they report is still the truth.
         self.ctx_used = tokens_after
+        self._guard_base = None  # the conversation was rewritten: the context guard counts again
         # Succeeded: forget any earlier failure so a later window that
         # happens to land on the same token count is not blocked by it.
         self._autocompact_failed_at = None

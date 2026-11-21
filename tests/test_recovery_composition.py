@@ -245,7 +245,7 @@ async def test_local_tool_threshold_summary_wake_never_exposes_held_claude_input
         later = {'content': 'LATER LOCAL QUEUED', 'source': 'typed'}
         app._pending_input.append(later)
         evidence = ledger.file.read_bytes()
-        app.ctx_max, app.ctx_used, app.ctx_loaded = 200_000, 160_000, True
+        app.ctx_max, app.ctx_used, app.ctx_loaded = 200_000, 120_000, True  # 60%: the context guard leaves the first request room
         app._append({'role': 'user', 'content': 'run the local probe'})
         app._stream()
         for _ in range(120):
