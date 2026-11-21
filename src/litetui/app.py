@@ -10910,6 +10910,7 @@ class LiteTUI(App):
                         stream = await model_transport.for_app(self).create(purpose="compaction", **kwargs)
                 provider_metadata = None
                 text_full = ""
+                reasoning_full = ""
                 tool_acc: dict = {}
                 tool_msgs: dict = {}
                 # Twin of the delta assembly in _stream, deliberately: the
@@ -10944,6 +10945,7 @@ class LiteTUI(App):
                         delta, "reasoning", None
                     )
                     if token:
+                        reasoning_full += token
                         card.think(token)
                         self._scroll_down()
                     if delta.content:
@@ -10995,7 +10997,8 @@ class LiteTUI(App):
                             round_budget = round_no + self.settings.compact_max_tool_iters
                             self._system(f"NOW.md was not saved ({why}); asking once more.")
                             card.set_status("NOW.md was not committed; asking once more")
-                            ask.append({"role": "assistant", "content": text_full})
+                            ask.append({"role": "assistant", "content": text_full,
+                                        **({"reasoning_content": reasoning_full} if reasoning_full else {})})
                             ask.append({"role": "user", "content": owner_mode.retry_text(why, owner_dir)})
                             continue
                     break
@@ -11007,6 +11010,10 @@ class LiteTUI(App):
                     "role": "assistant",
                     **({"provider_metadata": provider_metadata} if provider_metadata else {}),
                     "content": text_full or None,
+                    # The reply as the engine holds it. A chat turn resends its reasoning (_stream); an engine that keeps
+                    # reasoning in its state (NInfer --preserve-thinking) resumes a sequence only from an exact replay, so a
+                    # round resent without it re-read the whole prompt (Ryan 2026-11-21: 123k tokens, 66 s, every round).
+                    **({"reasoning_content": reasoning_full} if reasoning_full else {}),
                     "tool_calls": [
                         {
                             "id": slot["id"] or f"call_{i}",
