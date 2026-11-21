@@ -315,6 +315,49 @@ class TurnEngine:
             return None
         return pct
 
+    # ── the context guard: one request never carries the window past the user's percent ──
+    #
+    # Ryan, 2026-11-21, after one reasoning block ran to the whole 32,768-token output cap inside a
+    # single turn: "it can never bypass the 80% limit", then "its not exactly 80% thats what i have
+    # it set to in user settings ... user pick the %". The percent is `autocompact_at_percent`, read
+    # live. `autocompact_due` above only looks BETWEEN requests; these three look at one request.
+    #
+    # No reserve is added: the window above the percent IS the room the compaction request writes
+    # its summary into (`_maybe_autocompact`: "Needs headroom by design"), and the user sizes it
+    # with that same setting.
+
+    @staticmethod
+    def context_guard_ceiling(*, enabled: bool, at_percent: int, ctx_max: int | None,
+                              ctx_loaded: bool) -> int | None:
+        """The most context tokens a turn may reach, or None when there is no guard. The refusals
+        are `autocompact_due`'s: auto-compact off, no window, or a window that is only the model's
+        ceiling because it is not loaded."""
+        if not enabled or not ctx_max or not ctx_loaded:
+            return None
+        return int(ctx_max) * int(at_percent) // 100
+
+    @staticmethod
+    def guarded_max_tokens(*, max_tokens: int, ceiling: int | None,
+                           prompt_tokens: int | None) -> tuple[int, bool]:
+        """(the max_tokens to send, compact first?). The reply gets what is left under the ceiling
+        after the prompt, never more than it asked for. Less than COMPACT_MIN_RETRY_TOKENS left is
+        not a reply worth sending: compact first."""
+        if ceiling is None or prompt_tokens is None:
+            return int(max_tokens), False
+        room = int(ceiling) - int(prompt_tokens)
+        if room < TurnEngine.COMPACT_MIN_RETRY_TOKENS:
+            return int(max_tokens), True
+        return min(int(max_tokens), room), False
+
+    @staticmethod
+    def context_guard_hit(*, ceiling: int | None, prompt_tokens: int | None,
+                          streamed_tokens: int) -> bool:
+        """Mid-stream: has the prompt plus what has streamed so far reached the ceiling? For an
+        engine that ignores max_tokens, or a prompt that was larger than its estimate."""
+        if ceiling is None or prompt_tokens is None:
+            return False
+        return int(prompt_tokens) + int(streamed_tokens) >= int(ceiling)
+
     # ── request assembly ─────────────────────────────────────────────────
 
     @staticmethod
