@@ -118,6 +118,28 @@ def test_engine_lanes_sets_the_next_starts_concurrency(monkeypatch):
     assert "1..8" in app.said[-1] and app.worker is None
 
 
+def test_engine_lanes_says_when_the_chosen_model_will_start_with_one_lane(tmp_path, monkeypatch):
+    """T1383: an Inkling 2 artifact without a recipe starts with one sequence (it keeps its drafter),
+    so `/engine lanes 4` must not promise 4 for it. The setting is still saved for other models."""
+    from litetui import settings as settings_mod
+    from litetui.settings import Settings
+
+    monkeypatch.setenv(eng.LITESUITE_LLM_DIR_ENV, str(tmp_path))
+    monkeypatch.setattr(settings_mod, "save", lambda s, *a, **k: None)
+    body = json.dumps({"components": {"text": {"config": {"model_type": "inkling2"}}}}).encode()
+    head = bytearray(eng.NINFER_V3_HEADER_BYTES)
+    head[:8] = eng.NINFER_V3_MAGIC
+    struct.pack_into("<Q", head, 8, len(body))
+    art = tmp_path / "inkling.ninfer"
+    art.write_bytes(bytes(head) + body)
+    app = _App(_Backend())
+    app.settings = Settings()
+    app.settings.ninfer_artifact = str(art)
+    model_switch._cmd_engine(app, "engine", "lanes 4")
+    assert app.settings.ninfer_max_concurrency == 4
+    assert "inkling.ninfer (inkling2) starts with 1 lane instead" in app.said[-1]
+
+
 def _drive(app) -> None:
     model_switch._cmd_engine(app, "engine", "start")
     assert app.worker is not None, "the command did not start its worker"

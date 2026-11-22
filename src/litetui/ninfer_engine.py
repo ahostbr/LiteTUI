@@ -85,6 +85,24 @@ NINFER_DEFAULT_KV_DTYPE = "fp8"
 #: `--kv-dtype` choices (serving.md:775). fp8 stays the default: the envelope above
 #: (NINFER_MIN_FREE_MIB) was measured at fp8.
 NINFER_KV_DTYPES = ("bf16", "int8", "fp8", "nvfp4", "k8v4")
+#: T1383: the KV types a model family takes, keyed by the artifact header's `model_type`
+#: (artifact_model_type). A family listed here gets `--kv-dtype` only when the user's choice is
+#: in its tuple; otherwise NO `--kv-dtype` is sent and the engine's own default for that family
+#: applies. Inkling 2 takes no fp8 (its default is mxfp8, `ninfer-serve --help` 2026-11-21), so
+#: the stock fp8 setting used to make every Inkling start fail unless a recipe forced bf16.
+#: A family not listed keeps NINFER_KV_DTYPES and the fp8 default, exactly as before.
+NINFER_FAMILY_KV_DTYPES = {
+    "inkling2": ("bf16", "mxfp8", "rk8v4", "rk4v4"),
+}
+#: T1383: the most `--max-concurrency` a start WITHOUT a recipe sends for a family, and why, whatever
+#: ninfer_max_concurrency says (a recipe that wants parallel lanes still gets them). 1 = the flag is
+#: omitted, the engine's own default of one sequence. Measured 2026-11-21, Inkling 2 Mini IQ4_XS, same
+#: build: no flag 235.6 tok/s, KV 3,440 MiB, 23,151 MiB VRAM, drafter on; --max-concurrency 4
+#: 168.4 tok/s, KV 11,313 MiB, 30,398 MiB VRAM, no drafter ("serving one request at a time", its --help).
+#: A family not listed is sent the user's value, exactly as before.
+NINFER_FAMILY_MAX_CONCURRENCY = {
+    "inkling2": (1, "it keeps its drafter (on only when serving one request at a time) and a single sequence's KV"),
+}
 
 #: The engine's own words (ninfer-args.ts:184/195). A failure line ends the wait
 #: NOW rather than at the timeout.
@@ -202,7 +220,8 @@ RECIPE_VERSION = 1
 @dataclass(frozen=True)
 class LaunchRecipe:
     path: Path
-    executable: Path
+    #: None = the recipe names no build: its flags run on the user's configured engine (T1383).
+    executable: Path | None
     model_id: str | None
     max_context: int | None
     args: tuple[str, ...]
@@ -234,9 +253,11 @@ def read_launch_recipe(artifact: Path) -> LaunchRecipe | None:
         raise bad("the top level is not an object")
     if body.get("version") != RECIPE_VERSION:
         raise bad(f"version is {body.get('version')!r}, this build reads {RECIPE_VERSION}")
+    # T1383 (Ryan 2026-11-21: "stop trying to pin engines"): `executable` is optional. Absent or blank,
+    # the recipe's flags run on the configured engine (ninfer_executable); named, exactly as before.
     exe = body.get("executable")
-    if not isinstance(exe, str) or not exe.strip():
-        raise bad("`executable` is missing")
+    if exe is not None and not isinstance(exe, str):
+        raise bad("`executable` must be a path string (or left out to use the configured engine)")
     args = body.get("args", [])
     if not isinstance(args, list) or not all(isinstance(a, str) for a in args):
         raise bad("`args` must be a list of strings")
@@ -254,7 +275,7 @@ def read_launch_recipe(artifact: Path) -> LaunchRecipe | None:
     if _arg_value(args, "--spec") == "dspine" and "--draft-model" not in args:
         raise bad("`--spec dspine` needs `--draft-model PATH` (the drafter is its own artifact)")
     return LaunchRecipe(
-        path=sidecar, executable=Path(exe.strip()),
+        path=sidecar, executable=Path(exe.strip()) if exe and exe.strip() else None,
         model_id=model_id.strip() if model_id else None, max_context=max_context, args=tuple(args),
     )
 
@@ -378,14 +399,15 @@ def build_recipe_args(
 
 
 def effective_executable(settings) -> Path:
-    """The binary the next start will run: the chosen artifact's recipe executable when it
-    has a valid sidecar, else the setting / default. Never raises (a status line calls it)."""
+    """The binary the next start will run: the executable the chosen artifact's valid recipe
+    names, else the setting / default (also for a recipe that names none). Never raises (a
+    status line calls it)."""
     try:
         art = ninfer_artifact(settings)
         recipe = read_launch_recipe(art) if art is not None else None
     except BackendError:
         recipe = None
-    return recipe.executable if recipe else ninfer_executable(settings)
+    return recipe.executable if recipe and recipe.executable else ninfer_executable(settings)
 
 
 def ninfer_artifact(settings) -> Path | None:
@@ -440,6 +462,42 @@ def artifact_components(directory: dict | None) -> tuple[str, ...]:
     return ()
 
 
+def artifact_model_type(directory: dict | None) -> str | None:
+    """The model family: `components.text.config.model_type` (`inkling2`, `qwen3_5_text`,
+    `deepseek_v41` in the three artifacts read 2026-11-21), or None when the header does not say."""
+    try:
+        value = directory["components"]["text"]["config"]["model_type"]
+    except (KeyError, TypeError, IndexError):
+        return None
+    return value.strip() if isinstance(value, str) and value.strip() else None
+
+
+def family_concurrency_cap(model_type: str | None, requested) -> int | None:
+    """The lane count `model_type` is held to when `requested` is above it (NINFER_FAMILY_MAX_CONCURRENCY),
+    else None: a family not listed, or a request within its limit, is sent unchanged."""
+    rule = NINFER_FAMILY_MAX_CONCURRENCY.get(model_type or "")
+    if rule is None or not isinstance(requested, int) or isinstance(requested, bool) or requested <= rule[0]:
+        return None
+    return rule[0]
+
+
+def lanes_note(settings, requested) -> str:
+    """One sentence for `/engine lanes N` when the chosen model will NOT get N lanes (a family rule on a
+    start without a recipe), else "". Never raises: a status line calls it."""
+    try:
+        art = ninfer_artifact(settings)
+        if art is None or not art.is_file() or read_launch_recipe(art) is not None:
+            return ""
+    except BackendError:
+        return ""
+    family = artifact_model_type(read_artifact_directory(art))
+    cap = family_concurrency_cap(family, requested)
+    if cap is None:
+        return ""
+    return (f" {art.name} ({family}) starts with {cap} lane{'' if cap == 1 else 's'} instead: "
+            f"{NINFER_FAMILY_MAX_CONCURRENCY[family][1]}. A launch recipe can ask for more.")
+
+
 def artifact_model_id(directory: dict | None, fallback: str = "qwen3.8-27b") -> str:
     """LiteSuite pins `qwen3.8-27b` when the header does not say (llm-handlers.ts:945)."""
     if directory:
@@ -466,8 +524,13 @@ def build_ninfer_args(
     host_kv_mib: int | None = None,
     preserve_thinking: bool = True,
     vision: bool = True,
+    model_type: str | None = None,
+    fast_prefill_kernel: bool = False,
 ) -> list[str]:
-    """LiteSuite's buildNInferArgs, flag for flag. Pure, so it has an arm."""
+    """LiteSuite's buildNInferArgs, flag for flag. Pure, so it has an arm.
+
+    `model_type` picks the family's KV rule (NINFER_FAMILY_KV_DTYPES). `fast_prefill_kernel`
+    is decided by `start` from the setting AND the engine's --help (engine_flags)."""
     args = [str(artifact), "--host", host, "--port", str(port), "--model-id", model_id]
     ctx = max_context if isinstance(max_context, int) and max_context > 0 else NINFER_DEFAULT_MAX_CONTEXT
     args += ["--max-context", str(ctx)]
@@ -475,7 +538,13 @@ def build_ninfer_args(
     # NINFER_CONCURRENCY_RANGE. `bool` is an int; it is not a lane count.
     if isinstance(max_concurrency, int) and not isinstance(max_concurrency, bool) and max_concurrency > 0:
         lo, hi = NINFER_CONCURRENCY_RANGE
-        args += ["--max-concurrency", str(min(hi, max(lo, max_concurrency)))]
+        lanes = min(hi, max(lo, max_concurrency))
+        cap = family_concurrency_cap(model_type, lanes)
+        if cap is None:
+            args += ["--max-concurrency", str(lanes)]
+        elif cap > 1:
+            args += ["--max-concurrency", str(cap)]
+        # else: held to one sequence -> no flag, the engine's own default.
     want = spec or NINFER_DEFAULT_SPEC
     # 🔴 gated on the ARTIFACT, not on the flag parser: the failure otherwise
     # lands at model load, after the user has waited (ninfer-args.ts).
@@ -483,7 +552,12 @@ def build_ninfer_args(
         lo, hi = NINFER_DRAFT_TOKEN_RANGE.get(want, (1, 3))
         chosen = draft_tokens if isinstance(draft_tokens, int) and draft_tokens > 0 else NINFER_DEFAULT_DRAFT_TOKENS
         args += ["--spec", want, "--draft-tokens", str(min(hi, max(lo, chosen))), "--lm-head-draft"]
-    args += ["--kv-dtype", kv_dtype if kv_dtype in NINFER_KV_DTYPES else NINFER_DEFAULT_KV_DTYPE]
+    family_kv = NINFER_FAMILY_KV_DTYPES.get(model_type or "")
+    if family_kv is None:
+        args += ["--kv-dtype", kv_dtype if kv_dtype in NINFER_KV_DTYPES else NINFER_DEFAULT_KV_DTYPE]
+    elif kv_dtype in family_kv:
+        args += ["--kv-dtype", kv_dtype]
+    # else: a type this family does not take -> no flag, the engine's own default for it.
     # `--kv-capacity N|auto` (serving.md:759, :949-952): omitted = follows --max-context,
     # the old behaviour. Anything that is neither "auto" nor a positive count is omitted.
     cap = str(kv_capacity).strip().lower() if kv_capacity is not None and not isinstance(kv_capacity, bool) else ""
@@ -492,6 +566,8 @@ def build_ninfer_args(
     # `--host-kv-mib N` (serving.md:786): pinned host KV; omitted = the engine's 8192.
     if isinstance(host_kv_mib, int) and not isinstance(host_kv_mib, bool) and host_kv_mib > 0:
         args += ["--host-kv-mib", str(host_kv_mib)]
+    if fast_prefill_kernel:
+        args.append("--fast-prefill-kernel")
     if preserve_thinking:
         args.append("--preserve-thinking")
     # 15:0x 2026-09-17, the user's screenshot: the 35B-A3B carries a `vision` component, the
@@ -530,6 +606,48 @@ def running_argv(port: int) -> list[str] | None:
         if _arg_value(toks, "--port") == str(port):
             return toks
     return None
+
+
+#: An option line of `ninfer-serve --help`: `  --fast-prefill-kernel   prefill an int8 ...`, optionally
+#: after a short alias (`  -h, --help`). Only the line's FIRST long option counts, so a flag merely
+#: named inside another option's description is not read as supported. Option lines are indented 2 or 4;
+#: a wrapped description is indented ~32 and can BEGIN with an option name ("--draft-tokens or half of
+#: them"), so the indent is held to 1-8.
+_HELP_OPTION_RE = re.compile(r"^[ \t]{1,8}(?:-[A-Za-z0-9],[ \t]*)?(--[A-Za-z0-9][A-Za-z0-9_-]*)", re.M)
+NINFER_HELP_TIMEOUT_S = 15
+#: (normcased resolved path, size, mtime_ns) -> the long options that build's --help lists. Keyed on
+#: size and mtime too, so an engine rebuilt at the same path is asked again.
+_ENGINE_FLAGS: dict[tuple[str, int, int], frozenset[str]] = {}
+
+
+def engine_flags(exe: Path, *, run=None) -> frozenset[str]:
+    """The long options `exe --help` lists, read once per build (T1383).
+
+    Ryan 2026-11-21: "this isnt a private app" — an optional flag ships for every user, on
+    whatever engine they run, so LiteTUI asks the engine instead of naming builds. Any failure
+    (missing file, timeout, non-zero exit, nothing parseable) is an EMPTY set and never raises:
+    an engine LiteTUI cannot question gets no optional flags. A failure is not cached, so a
+    one-off timeout does not switch a flag off for the life of the process. `run` defaults to
+    `ttyguard.run` (no console window); tests inject it."""
+    try:
+        st = exe.stat()
+        key = (os.path.normcase(str(exe.resolve())), st.st_size, st.st_mtime_ns)
+    except OSError:
+        return frozenset()
+    cached = _ENGINE_FLAGS.get(key)
+    if cached is not None:
+        return cached
+    try:
+        out = (run or ttyguard.run)([str(exe), "--help"], timeout=NINFER_HELP_TIMEOUT_S, cwd=str(exe.parent))
+        if getattr(out, "returncode", 0) != 0:
+            return frozenset()
+        text = f"{getattr(out, 'stdout', '') or ''}\n{getattr(out, 'stderr', '') or ''}"
+        flags = frozenset(_HELP_OPTION_RE.findall(text))
+    except Exception:  # noqa: BLE001 - an engine we cannot question gets no optional flags
+        return frozenset()
+    if flags:
+        _ENGINE_FLAGS[key] = flags
+    return flags
 
 
 def free_port(host: str = "127.0.0.1") -> int:
@@ -958,7 +1076,7 @@ def refuse_reason(settings, *, healthy) -> str | None:
 
 
 def start(settings, *, healthy, spawn=ttyguard.popen, notice=None, progress=None,
-          cancel=None) -> OwnedEngine:
+          cancel=None, help_run=None) -> OwnedEngine:
     """Spawn ninfer-serve with LiteSuite's argv, wait for its ready line, register it.
 
     `healthy(host) -> bool` and `spawn` are injected so the arms never touch the
@@ -988,9 +1106,9 @@ def start(settings, *, healthy, spawn=ttyguard.popen, notice=None, progress=None
     except BackendError as exc:
         _log_event(f"REFUSED: {exc}")
         raise
-    exe = recipe.executable if recipe else ninfer_executable(settings)
+    exe = recipe.executable if recipe and recipe.executable else ninfer_executable(settings)
     if not exe.is_file():
-        if recipe:
+        if recipe and recipe.executable:
             msg = f"launch recipe {recipe.path} names {exe}, which does not exist — fix the recipe; nothing was started."
         else:
             msg = f"ninfer-serve not installed at {exe} — install it from LiteSuite's Model Hub, or set ninfer_executable."
@@ -1016,9 +1134,37 @@ def start(settings, *, healthy, spawn=ttyguard.popen, notice=None, progress=None
                                  user_max_context=ctx if isinstance(ctx, int) else None,
                                  speed_preset=getattr(settings, "ninfer_speed_preset", None),
                                  free_ram_gib=available_ram_gib(), on_note=_log_event)
-        # Only a recipe names its own (sync-build) executable; the stock exe may not know these flags.
-        args += [f for f in cache_flags(settings) if f not in args]
+        # The cache flags LiteTUI adds to a recipe start go through the engine's --help (T1383): a
+        # recipe with no executable runs on the configured engine, which may be too old for them.
+        # When the help cannot be read, a recipe that names its own build keeps today's behaviour
+        # (it was written for that build); one that names none gets none of them.
+        wanted = [f for f in cache_flags(settings) if f not in args]
+        if wanted:
+            supported = engine_flags(exe, run=help_run)
+            if supported:
+                keep = [f for f in wanted if f in supported]
+            else:
+                keep = wanted if recipe.executable else []
+            dropped = [f for f in wanted if f not in keep]
+            if dropped:
+                why = "its --help does not list them" if supported else "its --help could not be read"
+                _log_event(f"{' '.join(dropped)} left out: {exe} {why}; the recipe's own flags are unchanged")
+            args += keep
+        # T1383: no --fast-prefill-kernel here. A recipe is one model's measured flag set (DeepSeek
+        # with disk experts); the kernel was not measured there, so the recipe's flags stay as written.
     else:
+        fast_prefill = False
+        if getattr(settings, "ninfer_fast_prefill_kernel", True) is True:
+            supported = engine_flags(exe, run=help_run)
+            fast_prefill = "--fast-prefill-kernel" in supported
+            if not fast_prefill:
+                why = "its --help does not list it" if supported else "its --help could not be read"
+                _log_event(f"--fast-prefill-kernel left out: {exe} {why}; starting with the standard kernel")
+        family = artifact_model_type(directory)
+        cap = family_concurrency_cap(family, conc if isinstance(conc, int) else None)
+        if cap is not None:
+            _log_event(f"--max-concurrency {conc} lowered to {cap} for model family {family} (no launch recipe): "
+                       f"{NINFER_FAMILY_MAX_CONCURRENCY[family][1]}")
         args = build_ninfer_args(
             artifact, port, model_id,
             max_context=ctx if isinstance(ctx, int) else None,
@@ -1027,6 +1173,8 @@ def start(settings, *, healthy, spawn=ttyguard.popen, notice=None, progress=None
             kv_dtype=getattr(settings, "ninfer_kv_dtype", None) or NINFER_DEFAULT_KV_DTYPE,
             kv_capacity=getattr(settings, "ninfer_kv_capacity", None),
             host_kv_mib=getattr(settings, "ninfer_host_kv_mib", None),
+            model_type=family,
+            fast_prefill_kernel=fast_prefill,
         )
     lp = log_path()
     lp.parent.mkdir(parents=True, exist_ok=True)

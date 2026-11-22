@@ -434,7 +434,8 @@ def _set_lanes(app, raw: str) -> str:
     running = getattr(app.backend, "engine_concurrency", lambda: None)()
     tail = f"; the running engine has {running}" if running else ""
     return (f"NInfer lanes set to {raw} — applies on the next /engine start (/engine restart applies it now){tail}. "
-            "Lanes share the --max-context KV pool: no extra VRAM to speak of, less context each under load.")
+            "Lanes share the --max-context KV pool: no extra VRAM to speak of, less context each under load."
+            + ninfer_engine.lanes_note(s, int(raw)))
 
 
 def _cmd_engine(app, name: str, arg: str) -> None:

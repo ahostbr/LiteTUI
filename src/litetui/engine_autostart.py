@@ -61,7 +61,8 @@ def should_hold(app, source: str) -> bool:
 # instead of spawning. A different setting, or an explicit /engine start, tries again.
 
 _KEY_FIELDS = ("ninfer_executable", "ninfer_artifact", "ninfer_max_context", "ninfer_max_concurrency",
-               "ninfer_kv_dtype", "ninfer_kv_capacity", "ninfer_host_kv_mib", "ninfer_speed_preset")
+               "ninfer_kv_dtype", "ninfer_kv_capacity", "ninfer_host_kv_mib", "ninfer_speed_preset",
+               "ninfer_fast_prefill_kernel")
 
 
 def settings_key(app) -> tuple:

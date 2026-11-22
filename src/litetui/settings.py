@@ -140,6 +140,11 @@ class Settings:
     #: --derive-session-keys: a request with no session key (Chat Completions has none) gets one derived from its instruction messages and
     #: first user message, so the conversation keeps a session lineage and live-session retention. A compaction starts a new key. OFF by default.
     ninfer_derive_session_keys: bool = False
+    #: --fast-prefill-kernel: ON by default, passed only when the engine's --help lists it (ninfer_engine.engine_flags) and only on a
+    #: start without a launch recipe. Measured 2026-11-21 on a 27B: a cold 32,623-token prompt averaged 9,198 -> 8,506 ms (about 7%,
+    #: four runs each, two builds), perplexity 5.8330 -> 5.8338; decode is not faster. That is the default fp8 cache on a build from
+    #: 2026-11-21 or newer: older builds have the fast kernel only for int8, rk* and nvfp4 caches and change nothing at fp8.
+    ninfer_fast_prefill_kernel: bool = True
     #: Per-request `thinking_budget` (ninfer-serve serving.md:1160-1203): at this many thinking tokens the engine commits the early-close
     #: guidance and </think>, and generation goes on to the answer or tool call. None or 0 = off (the engine rejects a value < 1, so 0 is
     #: never sent). A request field, not a launch flag: no engine restart.
