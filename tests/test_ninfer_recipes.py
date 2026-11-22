@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import struct
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -29,6 +30,7 @@ def _isolated(tmp_path, monkeypatch):
     monkeypatch.setattr(eng, "gpu_free_mib", lambda: 30000)
     monkeypatch.setattr(eng, "engine_process_alive", lambda: False)
     monkeypatch.setattr(eng, "free_port", lambda host="127.0.0.1": 49260)
+    monkeypatch.setattr(eng, "_ENGINE_FLAGS", {})      # T1383: the --help cache is per test
     (tmp_path / "llm").mkdir()
 
 
@@ -203,7 +205,7 @@ def test_recipe_without_modelid_or_maxcontext_uses_the_artifacts_id_and_the_defa
     "{not json",
     "[]",
     json.dumps({"version": 2, "executable": "x"}),
-    json.dumps({"version": 1}),
+    json.dumps({"version": 1, "executable": 5}),     # T1383: absent is allowed now; a non-string is not
     json.dumps({"version": 1, "executable": "x", "args": "--spec dspark"}),
     json.dumps({"version": 1, "executable": "x", "args": [1]}),
     json.dumps({"version": 1, "executable": "x", "maxContext": -4}),
@@ -252,6 +254,89 @@ def test_a_recipe_start_never_adds_the_fast_prefill_kernel(tmp_path):
     eng.start(s, healthy=lambda h: False, spawn=spawn, help_run=help_run)
     assert "--fast-prefill-kernel" not in spawned["cmd"] and asked == []
     assert spawned["cmd"][-len(body["args"]):] == body["args"]
+
+
+# ── T1383: a recipe need not name an engine build (Ryan 2026-11-21: "stop trying to pin engines") ──
+
+def _start_with(settings, help_run):
+    spawned = {}
+
+    def spawn(cmd, **kw):
+        spawned["cmd"] = cmd
+        kw["stdout"].write("listening on http://127.0.0.1:49260\n")
+        kw["stdout"].flush()
+        return _Proc()
+
+    eng.start(settings, healthy=lambda h: False, spawn=spawn, help_run=help_run)
+    return spawned["cmd"]
+
+
+def _help(*flags):
+    return lambda cmd, **kw: subprocess.CompletedProcess(cmd, 0, stdout="".join(f"  {f}   x\n" for f in flags), stderr="")
+
+
+def _no_help(cmd, **kw):
+    raise subprocess.TimeoutExpired(cmd, 15)
+
+
+def _unpinned(tmp_path, *, exe_value=None):
+    """A recipe with no `executable` (or a blank one) and a configured engine of the user's own."""
+    s, art, _ = _setup(tmp_path)
+    configured = tmp_path / "configured" / "ninfer-serve.exe"
+    configured.parent.mkdir()
+    configured.write_bytes(b"MZ")
+    s.ninfer_executable = str(configured)
+    body = _recipe(art, configured)
+    if exe_value is None:
+        del body["executable"]
+    else:
+        body["executable"] = exe_value
+    eng.recipe_path(art).write_text(json.dumps(body), encoding="utf-8")
+    return s, art, configured, body
+
+
+@pytest.mark.parametrize("exe_value", [None, "", "  "], ids=["absent", "empty", "blank"])
+def test_a_recipe_without_an_executable_runs_its_flags_on_the_configured_engine(tmp_path, exe_value):
+    s, art, configured, body = _unpinned(tmp_path, exe_value=exe_value)
+    cmd = _start_with(s, _help("--kv-dtype"))
+    assert cmd == [str(configured), str(art), "--host", "127.0.0.1", "--port", "49260",
+                   "--model-id", "deepseek-v4.1-flash-coder-ninfer", "--max-context", "131072", *body["args"]]
+    assert eng.effective_executable(s) == configured
+
+
+def test_a_recipe_without_an_executable_and_no_configured_engine_refuses_in_the_usual_words(tmp_path):
+    s, _, configured, _ = _unpinned(tmp_path)
+    configured.unlink()
+    spawned = []
+    with pytest.raises(BackendError) as err:
+        eng.start(s, healthy=lambda h: False, spawn=lambda *a, **k: spawned.append(a), help_run=_help())
+    assert "ninfer-serve not installed at" in str(err.value) and spawned == []
+
+
+def test_a_cache_flag_the_unpinned_recipes_engine_lacks_is_left_out_with_one_log_line(tmp_path):
+    s, _, _, body = _unpinned(tmp_path)
+    s.ninfer_auto_long_anchors = True
+    s.ninfer_derive_session_keys = True
+    cmd = _start_with(s, _help("--kv-dtype", "--derive-session-keys"))       # an engine without anchors
+    assert "--auto-long-anchors" not in cmd and cmd[-1] == "--derive-session-keys"
+    assert cmd[-len(body["args"]) - 1:-1] == body["args"]                   # the recipe's own flags as written
+    log = (tmp_path / "data" / ".ninfer" / "litetui-ninfer-serve.log").read_text(encoding="utf-8")
+    assert log.count("--auto-long-anchors left out") == 1 and "does not list them" in log
+
+
+def test_an_unreadable_help_drops_cache_flags_only_for_a_recipe_that_names_no_engine(tmp_path):
+    s, _, _, _ = _unpinned(tmp_path)
+    s.ninfer_auto_long_anchors = True
+    assert "--auto-long-anchors" not in _start_with(s, _no_help)
+    assert "could not be read" in (tmp_path / "data" / ".ninfer" / "litetui-ninfer-serve.log").read_text(encoding="utf-8")
+
+
+def test_a_recipe_that_names_its_engine_keeps_todays_cache_flags_when_the_help_is_unreadable(tmp_path):
+    s, art, exe = _setup(tmp_path)
+    _recipe(art, exe)
+    s.ninfer_auto_long_anchors = True
+    cmd = _start_with(s, _no_help)
+    assert cmd[0] == str(exe) and cmd[-1] == "--auto-long-anchors"
 
 
 def test_no_sidecar_keeps_todays_argv(tmp_path):

@@ -313,7 +313,10 @@ HELP_NEW = ("usage: ninfer-serve ARTIFACT [options]\n"
             "  --fast-prefill-kernel         prefill an int8 or rk* KV cache with the fast kernel\n")
 #: An old build: the flag is only NAMED inside another option's description, which is not support.
 HELP_OLD = ("usage: ninfer-serve ARTIFACT [options]\n"
-            "  --kv-dtype TYPE               KV storage (newer builds add --fast-prefill-kernel)\n")
+            "  --kv-dtype TYPE               KV storage (newer builds add --fast-prefill-kernel)\n"
+            "    --spec MODE                 speculative decoding: mtp, dflash ... the draft window is\n"
+            # a wrapped description line that BEGINS with an option name (the real help has one)
+            "                                --draft-tokens or half of them\n")
 
 
 def _help_runner(text: str = HELP_NEW, *, returncode: int = 0, raises: Exception | None = None):
@@ -334,7 +337,7 @@ def test_engine_flags_lists_the_options_of_the_help_and_not_names_in_description
     assert {"--help", "--kv-dtype", "--fast-prefill-kernel"} <= flags
     assert calls[0][0] == [str(exe), "--help"] and calls[0][1]["cwd"] == str(tmp_path)   # CUDA DLLs beside it
     old = tmp_path / "old" / "ninfer-serve.exe"; old.parent.mkdir(); old.write_bytes(b"MZ")
-    assert eng.engine_flags(old, run=_help_runner(HELP_OLD)[0]) == frozenset({"--kv-dtype"})
+    assert eng.engine_flags(old, run=_help_runner(HELP_OLD)[0]) == frozenset({"--kv-dtype", "--spec"})
 
 
 def test_engine_flags_reads_the_help_once_per_build_and_again_when_the_exe_changes(tmp_path):
@@ -442,6 +445,51 @@ def test_start_sends_no_kv_dtype_for_an_inkling_artifact_and_fp8_for_a_qwen_one(
     owned = eng.start(s, healthy=lambda h: False, spawn=spawn, help_run=_help_runner()[0])
     assert spawned["cmd"][spawned["cmd"].index("--kv-dtype") + 1] == "fp8"
     eng.stop(owned)
+
+
+# Inkling 2 loses its drafter under parallel serving (measured 2026-11-21, Inkling 2 Mini IQ4_XS:
+# one sequence 235.6 tok/s with the drafter, --max-concurrency 4 168.4 tok/s without it).
+
+def test_inkling_is_held_to_one_sequence_and_every_other_family_gets_its_lanes():
+    def lanes(args):
+        return args[args.index("--max-concurrency") + 1] if "--max-concurrency" in args else None
+    assert lanes(eng.build_ninfer_args(Path("a"), 1, "m", model_type="inkling2", max_concurrency=4)) is None
+    assert lanes(eng.build_ninfer_args(Path("a"), 1, "m", model_type="inkling2", max_concurrency=1)) == "1"   # unchanged
+    assert lanes(eng.build_ninfer_args(Path("a"), 1, "m", model_type="inkling2")) is None                     # unset: unchanged
+    assert lanes(eng.build_ninfer_args(Path("a"), 1, "m", model_type="qwen3_5_text", max_concurrency=4)) == "4"
+    assert lanes(eng.build_ninfer_args(Path("a"), 1, "m", max_concurrency=4)) == "4"
+
+
+def test_start_lowers_inkling_lanes_with_one_log_line_and_leaves_qwen_alone(tmp_path, monkeypatch):
+    s, spawn, spawned = _ready_engine(tmp_path, monkeypatch, log_text="listening on http://127.0.0.1:49260\n")
+    s.ninfer_max_concurrency = 4
+    monkeypatch.setattr(eng, "read_artifact_directory", lambda p: _with_text_config("inkling2"))
+    owned = eng.start(s, healthy=lambda h: False, spawn=spawn, help_run=_help_runner()[0])
+    assert "--max-concurrency" not in spawned["cmd"]
+    assert eng.concurrency_in(owned.args) == 1                 # what /engine status reads: the truth
+    log = eng.log_path().read_text(encoding="utf-8")
+    assert log.count("--max-concurrency 4 lowered to 1 for model family inkling2") == 1 and "drafter" in log
+    eng.stop(owned)
+    monkeypatch.setattr(eng, "read_artifact_directory", lambda p: _with_text_config("qwen3_5_text"))
+    owned = eng.start(s, healthy=lambda h: False, spawn=spawn, help_run=_help_runner()[0])
+    assert spawned["cmd"][spawned["cmd"].index("--max-concurrency") + 1] == "4"
+    assert eng.log_path().read_text(encoding="utf-8").count("lowered to") == 1   # no line for qwen
+    eng.stop(owned)
+
+
+def test_lanes_note_names_the_family_only_when_its_start_will_be_lowered(tmp_path):
+    s = _Settings()
+    s.ninfer_artifact = str(_artifact(tmp_path, _with_text_config("inkling2")))
+    note = eng.lanes_note(s, 4)
+    assert "inkling2" in note and "1 lane" in note and "drafter" in note
+    assert eng.lanes_note(s, 1) == ""
+    s.ninfer_artifact = str(_artifact(tmp_path, _with_text_config("qwen3_5_text")))
+    assert eng.lanes_note(s, 4) == ""
+    s.ninfer_artifact = str(_artifact(tmp_path, _with_text_config("inkling2")))
+    eng.recipe_path(Path(s.ninfer_artifact)).write_text("{bad", encoding="utf-8")
+    assert eng.lanes_note(s, 4) == ""                          # a bad recipe: never raises
+    eng.recipe_path(Path(s.ninfer_artifact)).write_text(json.dumps({"version": 1, "args": []}), encoding="utf-8")
+    assert eng.lanes_note(s, 4) == ""                          # a recipe start keeps the user's lanes
 
 
 def test_an_earlier_runs_ready_line_does_not_count(tmp_path, monkeypatch):
