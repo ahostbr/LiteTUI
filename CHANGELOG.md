@@ -18,6 +18,29 @@ fails if this file's top released heading disagrees with it.
 
 ## [Unreleased]
 
+## [0.31.0] - 2026-11-21
+
+Faster prefill on NInfer by default, model defaults that need no engine path, Basalt as a managed engine, a context guard, and approval dialogs that keep their buttons on screen. Nothing here has been checked end to end by the maintainer.
+
+### Added
+- **NInfer starts with the fast prefill kernel** when the engine lists it in its `--help` (about 7% faster prefill; decode is not faster). Cache flags are passed only when the engine lists them, Inkling gets only a KV type it takes, and concurrency is set per model family.
+- **Model defaults** (a model's `.launch.json`) need not name an engine or an executable. The Settings row and `/model` say "model defaults".
+- **Basalt is a managed engine**, like Strata, Xolotl and NInfer. Image input is on by default when the pack carries its projector, packs can be listed from a second folder, and `view_image` says why a pack with a projector got no picture.
+- **A context guard**: one request never carries the context past your auto-compact percent.
+- **llama.cpp defaults**: embedded MTP is on for a GGUF that carries MTP heads, and q8_0 KV cache with flash attention is the default for a model with no KV setting. `ngram-mod` is an opt-in speculative type, and the Load tab has keys for MoE expert placement and the vision projector.
+- **A model that can see opens a picture itself**: `read` attaches images, and `tool_search` names the tools already loaded.
+
+### Fixed
+- **A compaction round resends its own reply with the reasoning**, as a chat turn does.
+- **The PowerShell tool no longer fails a command for an error the command handled.**
+- **A system line said before the chat log is attached waits for it** instead of crashing the app.
+- **The tool-approval dialog keeps Deny, Allow once and Always allow on screen**, even with a long argument, and opens on Deny so a blind Enter refuses.
+- **An engine the window started stays stoppable after `/agent-new`** (Strata, Xolotl, Basalt), and `/agent-new` accepts the model chosen for the next engine start.
+- **A tool call cut off at the output limit no longer ends the conversation**; Basalt keeps its full output cap.
+- **`--start-server` for a custom server waits until the launch model is loaded.**
+- **A settings save from an owned seat is accepted by the sidecar.**
+- **Engine startup errors are plain**, and a start that fails the same way is not repeated.
+
 ## [0.30.1] - 2026-11-15
 
 Thinking gets a budget with the answer's room on top of it, a model that cannot see can still use `view_image`, and engines started by an earlier session can be stopped. Nothing here has been checked end to end by the maintainer.
