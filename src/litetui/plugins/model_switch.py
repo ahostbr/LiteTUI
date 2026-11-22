@@ -135,7 +135,7 @@ backend_hint = llm_backend.backend_hint
 
 
 def _ninfer_artifact_rows(app) -> list[tuple[str, str]]:
-    from litetui.ninfer_engine import in_default_artifacts_dir, list_ninfer_artifacts, recipe_path
+    from litetui.ninfer_engine import in_default_artifacts_dir, list_ninfer_artifacts, model_defaults_path
 
     chosen = str(getattr(app.settings, "ninfer_artifact", "") or "").strip()
     rows = []
@@ -146,11 +146,11 @@ def _ninfer_artifact_rows(app) -> list[tuple[str, str]]:
             size = f"  · {path.stat().st_size / 1_000_000_000:.1f} GB"
         except OSError:
             pass
-        # T0839: artifacts outside the default folder show where they live, and a launch
-        # recipe is flagged so "why did it start with those flags" has an answer here.
+        # T0839: artifacts outside the default folder show where they live, and a model with its
+        # own defaults file is flagged so "why did it start with those flags" has an answer here.
         where = "" if in_default_artifacts_dir(path) else f"  · {path.parent}"
-        recipe = "  · recipe" if recipe_path(path).is_file() else ""
-        rows.append((str(path), f"{path.stem}{size}{recipe}{where}{mark}"))
+        defaults = "  · defaults" if model_defaults_path(path).is_file() else ""
+        rows.append((str(path), f"{path.stem}{size}{defaults}{where}{mark}"))
     return rows
 
 

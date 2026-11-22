@@ -1,4 +1,4 @@
-"""T0839 — artifact roots (`ninferArtifactRoots`) and launch recipes (`<artifact>.launch.json`).
+"""T0839 — artifact roots (`ninferArtifactRoots`) and model defaults (`<artifact>.launch.json`).
 
 Ryan 2026-11-04: "new model still not in slash model" and "fix it correctly so it shows and
 launches from litetui and litesuite". Every arm builds fake files in `tmp_path`; no engine is
@@ -75,7 +75,7 @@ def test_no_config_or_bad_config_means_only_the_default_folder(tmp_path):
     assert [p.name for p in eng.list_ninfer_artifacts()] == ["a.ninfer"]
 
 
-def test_the_picker_lists_an_extra_root_artifact_with_its_folder_and_recipe_flag(tmp_path):
+def test_the_picker_lists_an_extra_root_artifact_with_its_folder_and_defaults_mark(tmp_path):
     default = _default_dir(tmp_path)
     (default / "qwen.ninfer").write_bytes(b"x")
     extra = tmp_path / "g"
@@ -90,10 +90,11 @@ def test_the_picker_lists_an_extra_root_artifact_with_its_folder_and_recipe_flag
 
     rows = dict(model_switch._ninfer_artifact_rows(App()))
     assert str(extra) not in rows[str(default / "qwen.ninfer")]
-    assert str(extra) in rows[str(art)] and "recipe" in rows[str(art)]
+    assert str(extra) in rows[str(art)] and "  · defaults" in rows[str(art)]
+    assert "recipe" not in rows[str(art)].lower() and "· defaults" not in rows[str(default / "qwen.ninfer")]
 
 
-# ── recipe ───────────────────────────────────────────────────────────────────
+# ── model defaults ───────────────────────────────────────────────────────────
 
 def _artifact(path: Path, directory: dict | None = None) -> Path:
     body = json.dumps(directory or {"components": {"text": {}, "mtp": {}, "vision": {}}}).encode()
@@ -105,13 +106,13 @@ def _artifact(path: Path, directory: dict | None = None) -> Path:
     return path
 
 
-def _recipe(art: Path, exe: Path, **over) -> dict:
+def _defaults(art: Path, exe: Path, **over) -> dict:
     body = {"version": 1, "note": "n", "executable": str(exe), "modelId": "deepseek-v4.1-flash-coder-ninfer",
             "maxContext": 131072,
             "args": ["--ngram-table", "G:\\x\\engram.ninfer", "--expert-residency", "host", "--host-kv-mib", "1024",
                      "--spec", "dspark", "--draft-confidence", "0.7"]}
     body.update(over)
-    eng.recipe_path(art).write_text(json.dumps(body), encoding="utf-8")
+    eng.model_defaults_path(art).write_text(json.dumps(body), encoding="utf-8")
     return body
 
 
@@ -147,7 +148,7 @@ def _start(settings, tmp_path):
 
 
 def _setup(tmp_path):
-    exe = tmp_path / "recipe-bin" / "ninfer-serve.exe"
+    exe = tmp_path / "defaults-bin" / "ninfer-serve.exe"
     exe.parent.mkdir()
     exe.write_bytes(b"MZ")
     art = _artifact(tmp_path / "g" / "DeepSeek.ninfer")
@@ -156,9 +157,9 @@ def _setup(tmp_path):
     return s, art, exe
 
 
-def test_a_sidecar_gives_exactly_the_recipe_argv_and_nothing_from_settings(tmp_path):
+def test_a_sidecar_gives_exactly_the_model_defaults_argv_and_nothing_from_settings(tmp_path):
     s, art, exe = _setup(tmp_path)
-    body = _recipe(art, exe)
+    body = _defaults(art, exe)
     owned, cmd = _start(s, tmp_path)
     assert cmd == [
         str(exe), str(art), "--host", "127.0.0.1", "--port", "49260",
@@ -175,27 +176,27 @@ def test_a_sidecar_gives_exactly_the_recipe_argv_and_nothing_from_settings(tmp_p
     assert "--spec dspark" in log and "DeepSeek.ninfer.launch.json" in log
 
 
-def test_the_recipes_context_beats_the_global_setting(tmp_path):
+def test_the_model_defaults_context_beats_the_global_setting(tmp_path):
     s, art, exe = _setup(tmp_path)
-    _recipe(art, exe)
+    _defaults(art, exe)
     s.ninfer_max_context = 150000          # Ryan's global value, set for Qwen
     _, cmd = _start(s, tmp_path)
     assert cmd[cmd.index("--max-context") + 1] == "131072"
 
 
-def test_recipe_without_modelid_or_maxcontext_uses_the_artifacts_id_and_the_default(tmp_path):
+def test_model_defaults_without_modelid_or_maxcontext_use_the_artifacts_id_and_the_default(tmp_path):
     exe = tmp_path / "bin" / "ninfer-serve.exe"
     exe.parent.mkdir()
     exe.write_bytes(b"MZ")
     art = _artifact(tmp_path / "g" / "x.ninfer", {"model_id": "own-id", "components": {"text": {}}})
     s = _Settings()
     s.ninfer_artifact = str(art)
-    body = _recipe(art, exe)
+    body = _defaults(art, exe)
     del body["modelId"], body["maxContext"]
-    eng.recipe_path(art).write_text(json.dumps(body), encoding="utf-8")
+    eng.model_defaults_path(art).write_text(json.dumps(body), encoding="utf-8")
     owned, cmd = _start(s, tmp_path)
     assert cmd[cmd.index("--model-id") + 1] == "own-id" == owned.model_id
-    assert cmd[cmd.index("--max-context") + 1] == "32768"   # no recipe maxContext: the setting (here 32768)
+    assert cmd[cmd.index("--max-context") + 1] == "32768"   # no maxContext in the file: the setting (here 32768)
     s.ninfer_max_context = 150000
     _, cmd = _start(s, tmp_path)
     assert cmd[cmd.index("--max-context") + 1] == "150000"
@@ -213,37 +214,39 @@ def test_recipe_without_modelid_or_maxcontext_uses_the_artifacts_id_and_the_defa
 ])
 def test_a_bad_sidecar_refuses_in_words_and_never_falls_back(tmp_path, content):
     s, art, exe = _setup(tmp_path)
-    eng.recipe_path(art).write_text(content, encoding="utf-8")
+    eng.model_defaults_path(art).write_text(content, encoding="utf-8")
     s.ninfer_executable = str(exe)           # a perfectly good fallback exists; it must NOT be used
     spawned = []
     with pytest.raises(BackendError) as err:
         eng.start(s, healthy=lambda h: False, spawn=lambda *a, **k: spawned.append(a))
-    assert "launch recipe" in str(err.value) and "DeepSeek.ninfer.launch.json" in str(err.value)
+    assert "the model defaults file" in str(err.value) and "DeepSeek.ninfer.launch.json" in str(err.value)
+    assert "recipe" not in str(err.value).lower()       # T1383-B: Ryan's word is model defaults
     assert spawned == []
 
 
-def test_a_recipe_whose_executable_is_missing_refuses_naming_both_files(tmp_path):
+def test_model_defaults_whose_executable_is_missing_refuse_naming_both_files(tmp_path):
     s, art, exe = _setup(tmp_path)
-    _recipe(art, tmp_path / "gone" / "ninfer-serve.exe")
+    _defaults(art, tmp_path / "gone" / "ninfer-serve.exe")
     s.ninfer_executable = str(exe)
     spawned = []
     with pytest.raises(BackendError) as err:
         eng.start(s, healthy=lambda h: False, spawn=lambda *a, **k: spawned.append(a))
     assert "gone" in str(err.value) and "launch.json" in str(err.value)
+    assert str(err.value).startswith("the model defaults file ") and "recipe" not in str(err.value).lower()
     assert spawned == []
 
 
-def test_a_recipe_start_never_adds_the_fast_prefill_kernel(tmp_path):
-    """T1383: the recipe is one model's measured flag set; the kernel was not measured there.
-    The setting is on and the engine lists the flag, and still the recipe argv is untouched."""
+def test_a_model_defaults_start_never_adds_the_fast_prefill_kernel(tmp_path):
+    """T1383: model defaults are one model's measured flag set; the kernel was not measured there.
+    The setting is on and the engine lists the flag, and still their argv is untouched."""
     s, art, exe = _setup(tmp_path)
-    body = _recipe(art, exe)
+    body = _defaults(art, exe)
     s.ninfer_fast_prefill_kernel = True
     asked, spawned = [], {}
 
     def help_run(cmd, **kw):
         asked.append(cmd)
-        raise AssertionError("a recipe start must not ask the engine for optional flags")
+        raise AssertionError("a model defaults start must not ask the engine for optional flags")
 
     def spawn(cmd, **kw):
         spawned["cmd"] = cmd
@@ -256,7 +259,7 @@ def test_a_recipe_start_never_adds_the_fast_prefill_kernel(tmp_path):
     assert spawned["cmd"][-len(body["args"]):] == body["args"]
 
 
-# ── T1383: a recipe need not name an engine build (Ryan 2026-11-21: "stop trying to pin engines") ──
+# ── T1383: model defaults need not name an engine build (Ryan 2026-11-21: "stop trying to pin engines") ──
 
 def _start_with(settings, help_run):
     spawned = {}
@@ -280,23 +283,23 @@ def _no_help(cmd, **kw):
 
 
 def _unpinned(tmp_path, *, exe_value=None):
-    """A recipe with no `executable` (or a blank one) and a configured engine of the user's own."""
+    """Model defaults with no `executable` (or a blank one) and a configured engine of the user's own."""
     s, art, _ = _setup(tmp_path)
     configured = tmp_path / "configured" / "ninfer-serve.exe"
     configured.parent.mkdir()
     configured.write_bytes(b"MZ")
     s.ninfer_executable = str(configured)
-    body = _recipe(art, configured)
+    body = _defaults(art, configured)
     if exe_value is None:
         del body["executable"]
     else:
         body["executable"] = exe_value
-    eng.recipe_path(art).write_text(json.dumps(body), encoding="utf-8")
+    eng.model_defaults_path(art).write_text(json.dumps(body), encoding="utf-8")
     return s, art, configured, body
 
 
 @pytest.mark.parametrize("exe_value", [None, "", "  "], ids=["absent", "empty", "blank"])
-def test_a_recipe_without_an_executable_runs_its_flags_on_the_configured_engine(tmp_path, exe_value):
+def test_model_defaults_without_an_executable_run_their_flags_on_the_configured_engine(tmp_path, exe_value):
     s, art, configured, body = _unpinned(tmp_path, exe_value=exe_value)
     cmd = _start_with(s, _help("--kv-dtype"))
     assert cmd == [str(configured), str(art), "--host", "127.0.0.1", "--port", "49260",
@@ -304,7 +307,7 @@ def test_a_recipe_without_an_executable_runs_its_flags_on_the_configured_engine(
     assert eng.effective_executable(s) == configured
 
 
-def test_a_recipe_without_an_executable_and_no_configured_engine_refuses_in_the_usual_words(tmp_path):
+def test_model_defaults_without_an_executable_and_no_configured_engine_refuse_in_the_usual_words(tmp_path):
     s, _, configured, _ = _unpinned(tmp_path)
     configured.unlink()
     spawned = []
@@ -313,27 +316,27 @@ def test_a_recipe_without_an_executable_and_no_configured_engine_refuses_in_the_
     assert "ninfer-serve not installed at" in str(err.value) and spawned == []
 
 
-def test_a_cache_flag_the_unpinned_recipes_engine_lacks_is_left_out_with_one_log_line(tmp_path):
+def test_a_cache_flag_the_unpinned_model_defaults_engine_lacks_is_left_out_with_one_log_line(tmp_path):
     s, _, _, body = _unpinned(tmp_path)
     s.ninfer_auto_long_anchors = True
     s.ninfer_derive_session_keys = True
     cmd = _start_with(s, _help("--kv-dtype", "--derive-session-keys"))       # an engine without anchors
     assert "--auto-long-anchors" not in cmd and cmd[-1] == "--derive-session-keys"
-    assert cmd[-len(body["args"]) - 1:-1] == body["args"]                   # the recipe's own flags as written
+    assert cmd[-len(body["args"]) - 1:-1] == body["args"]                   # the model defaults' own flags as written
     log = (tmp_path / "data" / ".ninfer" / "litetui-ninfer-serve.log").read_text(encoding="utf-8")
     assert log.count("--auto-long-anchors left out") == 1 and "does not list them" in log
 
 
-def test_an_unreadable_help_drops_cache_flags_only_for_a_recipe_that_names_no_engine(tmp_path):
+def test_an_unreadable_help_drops_cache_flags_only_for_model_defaults_that_name_no_engine(tmp_path):
     s, _, _, _ = _unpinned(tmp_path)
     s.ninfer_auto_long_anchors = True
     assert "--auto-long-anchors" not in _start_with(s, _no_help)
     assert "could not be read" in (tmp_path / "data" / ".ninfer" / "litetui-ninfer-serve.log").read_text(encoding="utf-8")
 
 
-def test_a_recipe_that_names_its_engine_keeps_todays_cache_flags_when_the_help_is_unreadable(tmp_path):
+def test_model_defaults_that_name_their_engine_keep_todays_cache_flags_when_the_help_is_unreadable(tmp_path):
     s, art, exe = _setup(tmp_path)
-    _recipe(art, exe)
+    _defaults(art, exe)
     s.ninfer_auto_long_anchors = True
     cmd = _start_with(s, _no_help)
     assert cmd[0] == str(exe) and cmd[-1] == "--auto-long-anchors"
@@ -354,12 +357,12 @@ def test_no_sidecar_keeps_todays_argv(tmp_path):
     assert "--kv-dtype" in cmd and "--spec" in cmd
 
 
-def test_effective_executable_follows_the_recipe_and_never_raises(tmp_path):
+def test_effective_executable_follows_the_model_defaults_and_never_raises(tmp_path):
     s, art, exe = _setup(tmp_path)
     assert eng.effective_executable(s) == eng.ninfer_executable(s)
-    _recipe(art, exe)
+    _defaults(art, exe)
     assert eng.effective_executable(s) == exe
-    eng.recipe_path(art).write_text("{bad", encoding="utf-8")
+    eng.model_defaults_path(art).write_text("{bad", encoding="utf-8")
     assert eng.effective_executable(s) == eng.ninfer_executable(s)
 
 
@@ -374,13 +377,13 @@ def _two_builds(tmp_path):
     return old, new
 
 
-def test_the_old_dflash_recipe_starts_exactly_as_before(tmp_path):
+def test_the_old_dflash_model_defaults_start_exactly_as_before(tmp_path):
     """Ryan's 290 tok/s setup: the fork build, the drafter inside the artifact's dflash component."""
     old, _ = _two_builds(tmp_path)
     art = _artifact(tmp_path / "g" / "swift15_nvfp4_dspine_p.ninfer", {"components": {"text": {}, "dflash": {}}})
     args = ["--spec", "dflash", "--draft-tokens", "15", "--lm-head-draft", "--kv-dtype", "fp8",
             "--max-concurrency", "2"]
-    eng.recipe_path(art).write_text(json.dumps(
+    eng.model_defaults_path(art).write_text(json.dumps(
         {"version": 1, "executable": str(old), "modelId": "swift15-nvfp4-dspine", "args": args}), encoding="utf-8")
     s = _Settings()
     s.ninfer_artifact = str(art)
@@ -391,17 +394,17 @@ def test_the_old_dflash_recipe_starts_exactly_as_before(tmp_path):
     assert "--draft-model" not in cmd
 
 
-def test_a_dspine_recipe_passes_the_drafter_and_the_users_context(tmp_path):
+def test_dspine_model_defaults_pass_the_drafter_and_the_users_context(tmp_path):
     _, new = _two_builds(tmp_path)
     drafter = _artifact(tmp_path / "g" / "dspine" / "Qwen3.8-27B-DSpine-b16-q8.ninfer", {"components": {"dspine": {}}})
     art = _artifact(tmp_path / "g" / "swift15_nvfp4_dspine_up.ninfer", {"components": {"text": {}, "dflash": {}}})
     args = ["--spec", "dspine", "--draft-model", str(drafter), "--draft-tokens", "15", "--kv-dtype", "fp8",
             "--max-concurrency", "2"]
-    eng.recipe_path(art).write_text(json.dumps(
+    eng.model_defaults_path(art).write_text(json.dumps(
         {"version": 1, "executable": str(new), "modelId": "swift15-nvfp4-dspine-up", "args": args}), encoding="utf-8")
     s = _Settings()
     s.ninfer_artifact = str(art)
-    s.ninfer_max_context = 65536            # no maxContext in the recipe: his setting decides
+    s.ninfer_max_context = 65536            # no maxContext in the file: his setting decides
     _, cmd = _start(s, tmp_path)
     assert cmd[0] == str(new)
     assert cmd[cmd.index("--spec") + 1] == "dspine" and cmd.count("--spec") == 1
@@ -414,11 +417,11 @@ def test_a_dspine_recipe_passes_the_drafter_and_the_users_context(tmp_path):
     (["--spec", "dspine", "--draft-tokens", "15"], "--spec dspine"),
     (["--spec", "dspine", "--draft-model"], "--draft-model"),
 ])
-def test_a_dspine_recipe_without_its_drafter_refuses_before_any_spawn(tmp_path, args, says):
+def test_dspine_model_defaults_without_their_drafter_refuse_before_any_spawn(tmp_path, args, says):
     _, new = _two_builds(tmp_path)
     art = _artifact(tmp_path / "g" / "m.ninfer", {"components": {"text": {}}})
     args = [str(tmp_path / "gone.ninfer") if a == "MISSING" else a for a in args]
-    eng.recipe_path(art).write_text(json.dumps({"version": 1, "executable": str(new), "args": args}),
+    eng.model_defaults_path(art).write_text(json.dumps({"version": 1, "executable": str(new), "args": args}),
                                     encoding="utf-8")
     s = _Settings()
     s.ninfer_artifact = str(art)
@@ -435,3 +438,56 @@ def test_a_drafter_artifact_is_not_a_model_choice(tmp_path):
     _artifact(default / "drafter.ninfer", {"components": {"dspine": {}}})
     (default / "unreadable.ninfer").write_bytes(b"x")        # no header: stays listed, as before
     assert [p.name for p in eng.list_ninfer_artifacts()] == ["model.ninfer", "unreadable.ninfer"]
+
+
+# ── T1383-B: Ryan 2026-11-21, "there not recipes there just the default settings of a model" ──
+
+def _user_strings(module_path: Path) -> list[tuple[int, str]]:
+    """Every string literal in the module a user can be shown, with its line: plain strings and the
+    literal parts of f-strings. Left out: docstrings (developer text) and the one stored value
+    "recipe" (a saved ninfer_speed_preset key, kept so old settings keep working). Comments are not
+    in the syntax tree at all."""
+    import ast
+
+    tree = ast.parse(module_path.read_text(encoding="utf-8"))
+    docstrings = {id(node.body[0].value) for node in ast.walk(tree)
+                  if isinstance(node, (ast.Module, ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef))
+                  and node.body and isinstance(node.body[0], ast.Expr)
+                  and isinstance(node.body[0].value, ast.Constant) and isinstance(node.body[0].value.value, str)}
+    return [(node.lineno, node.value) for node in ast.walk(tree)
+            if isinstance(node, ast.Constant) and isinstance(node.value, str)
+            and id(node) not in docstrings and node.value != "recipe"]
+
+
+@pytest.mark.parametrize("module", ["ninfer_engine.py", "plugins/model_switch.py", "settings_screen.py"])
+def test_no_string_a_user_reads_says_recipe(module):
+    found = [(line, s) for line, s in _user_strings(Path(eng.__file__).parent / module) if "recipe" in s.lower()]
+    assert found == []
+
+
+def test_the_sweep_can_see_a_recipe_string(tmp_path):
+    """The positive control: the same reader finds the word in a message, an f-string and a label,
+    and skips only the docstring and the stored value."""
+    src = tmp_path / "m.py"
+    src.write_text('"""a recipe docstring"""\n'
+                   'x = "launch recipe gone"\n'
+                   'y = f"launch recipe {x} is unusable"\n'
+                   'z = {"recipe": ("recipe", "Recipe as written")}\n', encoding="utf-8")
+    assert [line for line, s in _user_strings(src) if "recipe" in s.lower()] == [2, 3, 4]
+
+
+def test_a_saved_recipe_speed_preset_still_means_flags_as_written(tmp_path):
+    """The stored value stays "recipe": a settings.json saved before T1383-B loads, is a choice
+    the Settings dropdown offers (Textual's Select refuses a value outside its options), and leaves
+    the model defaults' flags exactly as written."""
+    from litetui import settings as settings_mod
+
+    (tmp_path / settings_mod.SETTINGS_FILENAME).write_text(json.dumps({"ninfer_speed_preset": "recipe"}), encoding="utf-8")
+    saved = settings_mod.load(tmp_path).ninfer_speed_preset
+    assert saved == "recipe"
+    dropdown = [(p.label, p.key) for p in eng.SPEED_PRESETS.values()]     # settings_screen's options, as built there
+    assert saved in [key for _, key in dropdown]
+    assert eng.SPEED_PRESETS[saved].label.startswith("Model defaults as written")
+    args = ["--expert-residency", "disk", "--expert-host-mib", "46080", "--prefill-chunk", "4096"]
+    out, note = eng.apply_speed_preset(args, saved, free_ram_gib=200)
+    assert out == args and "as written" in note

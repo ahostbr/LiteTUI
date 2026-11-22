@@ -1,6 +1,6 @@
 """NInfer speed presets (Ryan 2026-11-08: "add this to settings default to fastest, add these speed examples and tierd preset options in a dropdown").
 
-A DeepSeek launch recipe streams experts from disk; two of its flags decide the speed: how many of the 7,680 experts stay in pinned RAM
+DeepSeek's model defaults stream experts from disk; two of their flags decide the speed: how many of the 7,680 experts stay in pinned RAM
 (--expert-host-mib) and --prefill-chunk. The bench of 2026-11-08 (<scratch>/T1192/bench-*) measured three tiers; the setting picks one.
 """
 from pathlib import Path
@@ -28,7 +28,7 @@ def test_every_dropdown_choice_is_a_preset_with_a_label():
 def test_fastest_keeps_every_expert_in_ram_and_chunks_4096():
     out, note = ne.apply_speed_preset(LIVE, "fastest", free_ram_gib=80)
     assert value(out, "--expert-host-mib") == "63488" and value(out, "--prefill-chunk") == "4096"
-    assert value(out, "--host-kv-mib") == "1024", "the recipe's other flags are untouched"
+    assert value(out, "--host-kv-mib") == "1024", "the model defaults' other flags are untouched"
     assert "fastest" in note
 
 
@@ -39,7 +39,7 @@ def test_fast_and_standard():
     assert value(standard, "--expert-host-mib") == "46080" and "--prefill-chunk" not in standard, "standard is the engine's own chunk"
 
 
-def test_recipe_leaves_the_flags_as_written():
+def test_the_preset_recipe_leaves_the_model_defaults_as_written():
     out, _ = ne.apply_speed_preset(LIVE, "recipe")
     assert out == LIVE
 
@@ -56,25 +56,25 @@ def test_unknown_ram_does_not_block_the_chosen_tier():
     assert value(out, "--expert-host-mib") == "63488"
 
 
-def test_a_recipe_without_a_disk_expert_tier_is_not_touched():
+def test_model_defaults_without_a_disk_expert_tier_are_not_touched():
     qwen = ["--spec", "mtp", "--kv-dtype", "fp8"]
     assert ne.apply_speed_preset(qwen, "fastest", free_ram_gib=80)[0] == qwen
     host = ["--expert-residency", "host", "--host-kv-mib", "1024"]
     assert ne.apply_speed_preset(host, "fastest", free_ram_gib=80)[0] == host
 
 
-def test_an_unknown_preset_keeps_the_recipe():
+def test_an_unknown_preset_keeps_the_model_defaults():
     out, note = ne.apply_speed_preset(LIVE, "turbo", free_ram_gib=80)
     assert out == LIVE and "unknown" in note
 
 
-def test_build_recipe_args_applies_the_preset_and_reports_it():
-    recipe = ne.LaunchRecipe(path=Path("x.launch.json"), executable=Path("ninfer-serve.exe"), model_id="m", max_context=131072, args=tuple(LIVE))
+def test_build_model_defaults_args_applies_the_preset_and_reports_it():
+    defaults = ne.ModelDefaults(path=Path("x.launch.json"), executable=Path("ninfer-serve.exe"), model_id="m", max_context=131072, args=tuple(LIVE))
     notes = []
-    args = ne.build_recipe_args(Path("a.ninfer"), 8151, "m", recipe, speed_preset="fast", free_ram_gib=80, on_note=notes.append)
+    args = ne.build_model_defaults_args(Path("a.ninfer"), 8151, "m", defaults, speed_preset="fast", free_ram_gib=80, on_note=notes.append)
     assert value(args, "--prefill-chunk") == "4096" and value(args, "--max-context") == "131072"
     assert notes and "fast" in notes[0]
-    plain = ne.build_recipe_args(Path("a.ninfer"), 8151, "m", recipe, speed_preset="recipe")
+    plain = ne.build_model_defaults_args(Path("a.ninfer"), 8151, "m", defaults, speed_preset="recipe")
     assert plain[plain.index("--max-context") + 2:] == LIVE
 
 
@@ -98,7 +98,7 @@ def test_each_cache_flag_is_added_only_when_switched_on():
 
 def test_the_fast_prefill_kernel_setting_defaults_on_and_is_not_a_cache_flag():
     """T1383: on by default (gated in ninfer_engine.start on the engine's --help); never part of
-    cache_flags, so a launch recipe does not get it."""
+    cache_flags, so a model defaults start does not get it."""
     s = Settings()
     assert s.ninfer_fast_prefill_kernel is True
     assert "--fast-prefill-kernel" not in ne.cache_flags(s)

@@ -6,14 +6,14 @@ cache of the most-used experts in VRAM. One model per process, OpenAI-compatible
 
 WHAT AN INSTALL IS: Strata's own `setup.py` (LiteSuite's Model Hub runs it) leaves a
 folder with `.venv`, `serve/server.py`, the engine, and one `strata-<model>.json` per
-prepared model. That JSON is the whole launch recipe — the engine path, its args, the
+prepared model. That JSON is the model's whole start config — the engine path, its args, the
 port — so THE MODEL LIST FOR THIS BACKEND IS THE CONFIG FILES, and starting one is
 `<root>/.venv python serve/server.py --engine strata --config <json> --port N`, the
 same line Strata's `run-<model>.bat` writes.
 
 REUSE, DO NOT REBUILD: the owned-process handle, the KILL_ON_JOB_CLOSE job and the
 terminal-shutdown proof are `ninfer_engine`'s, used as they are. What is here is only
-what differs — where the recipe comes from, what "ready" looks like, and the RAM gate.
+what differs — where the start config comes from, what "ready" looks like, and the RAM gate.
 
 🔴 MEMORY, measured 2026-10-06 on a 64 GB / RTX 5090 box with the IQ3_XXS files:
 39.97 GiB of experts pinned (0.91 of the first shard's 47.0 GB), engine working set

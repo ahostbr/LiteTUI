@@ -1037,9 +1037,9 @@ class SettingsBody(Widget):
                             )
                             yield self._section_header("ninfer-envelope")
                             yield from self._select_row(
-                                "ninfer_speed_preset", "NInfer: speed preset (DeepSeek recipes)",
+                                "ninfer_speed_preset", "NInfer: speed preset (DeepSeek model defaults)",
                                 [(p.label, p.key) for p in ninfer_engine.SPEED_PRESETS.values()],
-                                "Sets the expert tier (--expert-host-mib) and --prefill-chunk of the model's launch recipe. Measured on an RTX 5090, "
+                                "Sets the expert tier (--expert-host-mib) and --prefill-chunk in the model's default settings. Measured on an RTX 5090, "
                                 "first token on a cold prompt. Fastest: 32K = 17-21 s, 83K = 60-71 s, RAM ~80%, decode 45-49 tok/s. "
                                 "Fast: 32K = 20-21 s, 83K = 51 s, RAM ~63%. Standard: 32K = 24 s, 83K = 54 s, RAM ~63%. Runs vary by about 25%. "
                                 "Fastest needs 70 GiB of free RAM at launch and drops to Fast when it is not free. Applies on the next /engine start.",
@@ -1061,7 +1061,7 @@ class SettingsBody(Widget):
                                 "about 7% faster (measured: a cold 32,623-token prompt averaged 9.2 s without it and 8.5 s with it; perplexity "
                                 "5.8330 -> 5.8338). An older engine accepts the switch and behaves as before. Decode speed is not improved, and where "
                                 "it takes effect the wording of answers can change. Turn it off for the engine's standard kernel. Used only when the "
-                                "engine supports it, and not for a model with a launch recipe. "
+                                "engine supports it, and not for a model with its own defaults file. "
                                 "Applies on the next /engine start.",
                             )
                             yield from self._text_row(

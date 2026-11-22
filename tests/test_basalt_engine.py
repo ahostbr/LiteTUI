@@ -234,7 +234,7 @@ def test_the_lossy_settings_are_named_only_when_one_is_on():
     assert eng.lossy_settings(settings) == ["route-tail-skip", "relaxed-drafting"]
 
 
-# ── the launch recipe ────────────────────────────────────────────────────────
+# ── the launch plan ──────────────────────────────────────────────────────────
 
 def test_launch_plan_runs_the_server_itself_on_a_config_written_beside_the_log(tmp_path):
     settings, (pack,) = _install(tmp_path, "Qwen3.8-FN-IQ3_S")

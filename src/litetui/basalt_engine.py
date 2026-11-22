@@ -15,7 +15,7 @@ own code (`spawn_server`, `terminate_owned`, the port and GPU checks):
   * A MODEL IS ONE FILE. There is no `strata-<model>.json`: each `*.basalt` under the install's
     `packs/` or `models/` folder, or in `basalt_packs_dir` (a second folder, e.g. another drive),
     is a prepared model, and THAT is the model list. `basalt_config` names the one to serve (the setting keeps Strata's name so `/model` is one door).
-  * THE RECIPE IS WRITTEN BY LITETUI. Basalt takes a version 2 JSON (`--config`); LiteTUI writes
+  * THE RUN CONFIG IS WRITTEN BY LITETUI. Basalt takes a version 2 JSON (`--config`); LiteTUI writes
     one beside its log from the settings (`run_config`), never into the install.
   * READY IS NOT "ANSWERING". The server prints its `ready` line and answers `/health` at once
     and loads the weights behind it. The wait keys on `weights  loaded` (server.py) or `/health`
@@ -99,7 +99,7 @@ def basalt_pack(settings) -> Path | None:
 
 
 def read_config(path) -> dict | None:
-    """What `/model` and `/engine status` ask of a listed model. A pack carries no launch recipe
+    """What `/model` and `/engine status` ask of a listed model. A pack carries no run config
     (LiteTUI writes it), so this says whether `path` is a pack and the id it will be served under."""
     path = Path(path)
     if path.suffix.lower() != ".basalt" or not path.is_file():

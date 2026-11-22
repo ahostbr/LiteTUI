@@ -89,13 +89,13 @@ NINFER_KV_DTYPES = ("bf16", "int8", "fp8", "nvfp4", "k8v4")
 #: (artifact_model_type). A family listed here gets `--kv-dtype` only when the user's choice is
 #: in its tuple; otherwise NO `--kv-dtype` is sent and the engine's own default for that family
 #: applies. Inkling 2 takes no fp8 (its default is mxfp8, `ninfer-serve --help` 2026-11-21), so
-#: the stock fp8 setting used to make every Inkling start fail unless a recipe forced bf16.
+#: the stock fp8 setting used to make every Inkling start fail unless the model's defaults file forced bf16.
 #: A family not listed keeps NINFER_KV_DTYPES and the fp8 default, exactly as before.
 NINFER_FAMILY_KV_DTYPES = {
     "inkling2": ("bf16", "mxfp8", "rk8v4", "rk4v4"),
 }
-#: T1383: the most `--max-concurrency` a start WITHOUT a recipe sends for a family, and why, whatever
-#: ninfer_max_concurrency says (a recipe that wants parallel lanes still gets them). 1 = the flag is
+#: T1383: the most `--max-concurrency` a start WITHOUT model defaults sends for a family, and why, whatever
+#: ninfer_max_concurrency says (model defaults that want parallel lanes still get them). 1 = the flag is
 #: omitted, the engine's own default of one sequence. Measured 2026-11-21, Inkling 2 Mini IQ4_XS, same
 #: build: no flag 235.6 tok/s, KV 3,440 MiB, 23,151 MiB VRAM, drafter on; --max-concurrency 4
 #: 168.4 tok/s, KV 11,313 MiB, 30,398 MiB VRAM, no drafter ("serving one request at a time", its --help).
@@ -212,38 +212,39 @@ def in_default_artifacts_dir(path: Path) -> bool:
     return _same_path_key(path.parent) == _same_path_key(artifacts_dir())
 
 
-# ── launch recipes: `<artifact>.launch.json` (T0839) ────────────────────────
+# ── model defaults: `<artifact>.launch.json` (T0839) ────────────────────────
 
-RECIPE_VERSION = 1
+MODEL_DEFAULTS_VERSION = 1
 
 
 @dataclass(frozen=True)
-class LaunchRecipe:
+class ModelDefaults:
+    """One model's default settings: its `<artifact>.launch.json` file (read_model_defaults)."""
     path: Path
-    #: None = the recipe names no build: its flags run on the user's configured engine (T1383).
+    #: None = the file names no build: its flags run on the user's configured engine (T1383).
     executable: Path | None
     model_id: str | None
     max_context: int | None
     args: tuple[str, ...]
 
 
-def recipe_path(artifact: Path) -> Path:
+def model_defaults_path(artifact: Path) -> Path:
     return artifact.with_name(artifact.name + ".launch.json")
 
 
-def read_launch_recipe(artifact: Path) -> LaunchRecipe | None:
-    """The artifact's launch recipe, or None when it has no sidecar.
+def read_model_defaults(artifact: Path) -> ModelDefaults | None:
+    """The artifact's model defaults (its `.launch.json` sidecar), or None when it has none.
 
     🔴 A SIDECAR THAT EXISTS IS ALWAYS OBEYED OR REFUSED, NEVER SKIPPED. One that does
     not parse (or fails the checks below) raises BackendError naming the file: falling
-    back to the computed flags would start a different engine than the one the recipe
-    describes (the DeepSeek recipe REPLACES the app's tuning; its flags are measured)."""
-    sidecar = recipe_path(artifact)
+    back to the computed flags would start a different engine than the one the file
+    describes (DeepSeek's model defaults REPLACE the app's tuning; their flags are measured)."""
+    sidecar = model_defaults_path(artifact)
     if not sidecar.is_file():
         return None
 
     def bad(why: str) -> BackendError:
-        return BackendError(f"launch recipe {sidecar} is unusable: {why} — fix or delete it; nothing was started.")
+        return BackendError(f"the model defaults file {sidecar} is unusable: {why} — fix or delete it; nothing was started.")
 
     try:
         body = json.loads(sidecar.read_text(encoding="utf-8"))
@@ -251,10 +252,10 @@ def read_launch_recipe(artifact: Path) -> LaunchRecipe | None:
         raise bad(f"cannot read it as JSON ({exc})") from exc
     if not isinstance(body, dict):
         raise bad("the top level is not an object")
-    if body.get("version") != RECIPE_VERSION:
-        raise bad(f"version is {body.get('version')!r}, this build reads {RECIPE_VERSION}")
+    if body.get("version") != MODEL_DEFAULTS_VERSION:
+        raise bad(f"version is {body.get('version')!r}, this build reads {MODEL_DEFAULTS_VERSION}")
     # T1383 (Ryan 2026-11-21: "stop trying to pin engines"): `executable` is optional. Absent or blank,
-    # the recipe's flags run on the configured engine (ninfer_executable); named, exactly as before.
+    # the file's flags run on the configured engine (ninfer_executable); named, exactly as before.
     exe = body.get("executable")
     if exe is not None and not isinstance(exe, str):
         raise bad("`executable` must be a path string (or left out to use the configured engine)")
@@ -274,13 +275,13 @@ def read_launch_recipe(artifact: Path) -> LaunchRecipe | None:
         raise bad(f"`--draft-model` names {draft_model!r}, which is not a file")
     if _arg_value(args, "--spec") == "dspine" and "--draft-model" not in args:
         raise bad("`--spec dspine` needs `--draft-model PATH` (the drafter is its own artifact)")
-    return LaunchRecipe(
+    return ModelDefaults(
         path=sidecar, executable=Path(exe.strip()) if exe and exe.strip() else None,
         model_id=model_id.strip() if model_id else None, max_context=max_context, args=tuple(args),
     )
 
 
-# ── speed presets for a DeepSeek launch recipe (Ryan 2026-11-08) ────────────
+# ── speed presets for DeepSeek's model defaults (Ryan 2026-11-08) ───────────
 #
 # Measured 2026-11-08 on the RTX 5090 / 96 GB box with the sync build (<scratch>/T1192/bench-*), DSpark, prefix reuse on, 131072 window.
 # The host tier is how many of the 7,680 experts sit in pinned RAM (8.19 MiB each); the rest are read from the SSD on every prefill pass.
@@ -296,7 +297,7 @@ SPEED_PRESET_DEFAULT = "fastest"
 class SpeedPreset:
     key: str
     label: str
-    host_mib: int | None        # --expert-host-mib; None leaves the recipe's value
+    host_mib: int | None        # --expert-host-mib; None leaves the model defaults' value
     prefill_chunk: int | None   # --prefill-chunk; None removes it (the engine's own 2048)
     needs_free_ram_gib: float   # fall back one tier when less than this is free at launch
     fallback: str | None
@@ -306,7 +307,8 @@ SPEED_PRESETS: dict[str, SpeedPreset] = {
     "fastest": SpeedPreset("fastest", "Fastest: all experts in RAM (62 GiB), chunk 4096", 63488, 4096, 70.0, "fast"),
     "fast": SpeedPreset("fast", "Fast: 45 GiB of experts in RAM, chunk 4096", 46080, 4096, 52.0, "standard"),
     "standard": SpeedPreset("standard", "Standard: 45 GiB of experts in RAM, chunk 2048", 46080, None, 0.0, None),
-    "recipe": SpeedPreset("recipe", "Recipe as written (the .launch.json flags, untouched)", None, None, 0.0, None),
+    # "recipe" is the value users' saved settings hold (ninfer_speed_preset), so the key stays; only its label changed (T1383-B).
+    "recipe": SpeedPreset("recipe", "Model defaults as written (the .launch.json flags, untouched)", None, None, 0.0, None),
 }
 
 
@@ -355,18 +357,18 @@ def _set_flag(args: list[str], flag: str, value: str | None) -> list[str]:
 
 
 def apply_speed_preset(args: list[str], preset: str | None, *, free_ram_gib: float | None = None) -> tuple[list[str], str]:
-    """The recipe args with the preset's two flags applied, and a one-line note for the log.
+    """The model defaults' args with the preset's two flags applied, and a one-line note for the log.
 
-    Only a recipe that streams experts from disk (`--expert-residency disk`) is touched: any other recipe (a Qwen artifact, residency host)
+    Only model defaults that stream experts from disk (`--expert-residency disk`) are touched: any others (a Qwen artifact, residency host)
     has no expert tier to size. A tier whose RAM is not free at launch falls back one tier instead of failing to pin."""
     key = (preset or SPEED_PRESET_DEFAULT).strip().lower()
     chosen = SPEED_PRESETS.get(key)
     if chosen is None:
-        return list(args), f"speed preset {key!r} unknown: recipe flags kept"
+        return list(args), f"speed preset {key!r} unknown: the model defaults' flags are kept"
     if key == "recipe":
-        return list(args), "speed preset recipe: flags as written"
+        return list(args), "speed preset: the model defaults as written"
     if "--expert-residency" not in args or args[args.index("--expert-residency") + 1:][:1] != ["disk"]:
-        return list(args), f"speed preset {key}: not applied (this recipe has no disk expert tier)"
+        return list(args), f"speed preset {key}: not applied (this model's defaults have no disk expert tier)"
     note = ""
     while free_ram_gib is not None and chosen.needs_free_ram_gib > free_ram_gib and chosen.fallback:
         note += f"{chosen.key} needs {chosen.needs_free_ram_gib:.0f} GiB of free RAM, {free_ram_gib:.0f} free: "
@@ -376,22 +378,22 @@ def apply_speed_preset(args: list[str], preset: str | None, *, free_ram_gib: flo
     return out, f"speed preset {note}{chosen.key}: --expert-host-mib {chosen.host_mib}, --prefill-chunk {chosen.prefill_chunk or 'engine default'}"
 
 
-def build_recipe_args(
-    artifact: Path, port: int, model_id: str, recipe: LaunchRecipe, *,
+def build_model_defaults_args(
+    artifact: Path, port: int, model_id: str, model_defaults: ModelDefaults, *,
     host: str = "127.0.0.1", user_max_context: int | None = None, speed_preset: str | None = None,
     free_ram_gib: float | None = None, on_note=None,
 ) -> list[str]:
-    """The recipe argv, and NOTHING else: no kv-dtype, preserve-thinking, spec, vision,
-    concurrency or host-kv from settings. Context precedence (Sentinel, T0839): the recipe's
+    """The model defaults' argv, and NOTHING else: no kv-dtype, preserve-thinking, spec, vision,
+    concurrency or host-kv from settings. Context precedence (Sentinel, T0839): the file's
     `maxContext`, else the user's `ninfer_max_context`, else the app default. The setting is
-    global across artifacts; the recipe is per-artifact and more specific."""
-    if recipe.max_context:
-        ctx = recipe.max_context
+    global across artifacts; the model defaults are per-artifact and more specific."""
+    if model_defaults.max_context:
+        ctx = model_defaults.max_context
     elif isinstance(user_max_context, int) and not isinstance(user_max_context, bool) and user_max_context > 0:
         ctx = user_max_context
     else:
         ctx = NINFER_DEFAULT_MAX_CONTEXT
-    tuned, note = apply_speed_preset(list(recipe.args), speed_preset, free_ram_gib=free_ram_gib)
+    tuned, note = apply_speed_preset(list(model_defaults.args), speed_preset, free_ram_gib=free_ram_gib)
     if on_note is not None:
         on_note(note)
     return [str(artifact), "--host", host, "--port", str(port), "--model-id", model_id,
@@ -399,15 +401,15 @@ def build_recipe_args(
 
 
 def effective_executable(settings) -> Path:
-    """The binary the next start will run: the executable the chosen artifact's valid recipe
-    names, else the setting / default (also for a recipe that names none). Never raises (a
+    """The binary the next start will run: the executable the chosen artifact's valid model
+    defaults file names, else the setting / default (also for one that names none). Never raises (a
     status line calls it)."""
     try:
         art = ninfer_artifact(settings)
-        recipe = read_launch_recipe(art) if art is not None else None
+        model_defaults = read_model_defaults(art) if art is not None else None
     except BackendError:
-        recipe = None
-    return recipe.executable if recipe and recipe.executable else ninfer_executable(settings)
+        model_defaults = None
+    return model_defaults.executable if model_defaults and model_defaults.executable else ninfer_executable(settings)
 
 
 def ninfer_artifact(settings) -> Path | None:
@@ -483,10 +485,10 @@ def family_concurrency_cap(model_type: str | None, requested) -> int | None:
 
 def lanes_note(settings, requested) -> str:
     """One sentence for `/engine lanes N` when the chosen model will NOT get N lanes (a family rule on a
-    start without a recipe), else "". Never raises: a status line calls it."""
+    start without model defaults), else "". Never raises: a status line calls it."""
     try:
         art = ninfer_artifact(settings)
-        if art is None or not art.is_file() or read_launch_recipe(art) is not None:
+        if art is None or not art.is_file() or read_model_defaults(art) is not None:
             return ""
     except BackendError:
         return ""
@@ -495,7 +497,7 @@ def lanes_note(settings, requested) -> str:
     if cap is None:
         return ""
     return (f" {art.name} ({family}) starts with {cap} lane{'' if cap == 1 else 's'} instead: "
-            f"{NINFER_FAMILY_MAX_CONCURRENCY[family][1]}. A launch recipe can ask for more.")
+            f"{NINFER_FAMILY_MAX_CONCURRENCY[family][1]}. The model's defaults file can ask for more.")
 
 
 def artifact_model_id(directory: dict | None, fallback: str = "qwen3.8-27b") -> str:
@@ -1098,18 +1100,18 @@ def start(settings, *, healthy, spawn=ttyguard.popen, notice=None, progress=None
     if reason:
         _log_event(f"REFUSED: {reason}")
         raise BackendError(reason)
-    # T0839: the artifact's launch recipe (if any) names its own executable, so it is read
-    # before the executable check. A recipe that is present and unusable refuses here.
+    # T0839: the artifact's model defaults (if any) name their own executable, so they are read
+    # before the executable check. A defaults file that is present and unusable refuses here.
     artifact = ninfer_artifact(settings)
     try:
-        recipe = read_launch_recipe(artifact) if artifact is not None and artifact.is_file() else None
+        model_defaults = read_model_defaults(artifact) if artifact is not None and artifact.is_file() else None
     except BackendError as exc:
         _log_event(f"REFUSED: {exc}")
         raise
-    exe = recipe.executable if recipe and recipe.executable else ninfer_executable(settings)
+    exe = model_defaults.executable if model_defaults and model_defaults.executable else ninfer_executable(settings)
     if not exe.is_file():
-        if recipe and recipe.executable:
-            msg = f"launch recipe {recipe.path} names {exe}, which does not exist — fix the recipe; nothing was started."
+        if model_defaults and model_defaults.executable:
+            msg = f"the model defaults file {model_defaults.path} names {exe}, which does not exist — fix the file; nothing was started."
         else:
             msg = f"ninfer-serve not installed at {exe} — install it from LiteSuite's Model Hub, or set ninfer_executable."
         _log_event(f"REFUSED: {msg}")
@@ -1123,20 +1125,20 @@ def start(settings, *, healthy, spawn=ttyguard.popen, notice=None, progress=None
     # running MoE advertise itself as qwen3.8-27b in every picker. The file's own name is
     # the honest label when the header says nothing.
     model_id = artifact_model_id(directory, fallback=artifact.stem)
-    if recipe and recipe.model_id:
-        model_id = recipe.model_id   # the id a client sees (/model, conversations)
+    if model_defaults and model_defaults.model_id:
+        model_id = model_defaults.model_id   # the id a client sees (/model, conversations)
     port = free_port()
     host = f"http://127.0.0.1:{port}"
     ctx = getattr(settings, "ninfer_max_context", None)
     conc = getattr(settings, "ninfer_max_concurrency", None)
-    if recipe:
-        args = build_recipe_args(artifact, port, model_id, recipe,
-                                 user_max_context=ctx if isinstance(ctx, int) else None,
-                                 speed_preset=getattr(settings, "ninfer_speed_preset", None),
-                                 free_ram_gib=available_ram_gib(), on_note=_log_event)
-        # The cache flags LiteTUI adds to a recipe start go through the engine's --help (T1383): a
-        # recipe with no executable runs on the configured engine, which may be too old for them.
-        # When the help cannot be read, a recipe that names its own build keeps today's behaviour
+    if model_defaults:
+        args = build_model_defaults_args(artifact, port, model_id, model_defaults,
+                                         user_max_context=ctx if isinstance(ctx, int) else None,
+                                         speed_preset=getattr(settings, "ninfer_speed_preset", None),
+                                         free_ram_gib=available_ram_gib(), on_note=_log_event)
+        # The cache flags LiteTUI adds to a model defaults start go through the engine's --help (T1383):
+        # model defaults with no executable run on the configured engine, which may be too old for them.
+        # When the help cannot be read, a defaults file that names its own build keeps today's behaviour
         # (it was written for that build); one that names none gets none of them.
         wanted = [f for f in cache_flags(settings) if f not in args]
         if wanted:
@@ -1144,14 +1146,14 @@ def start(settings, *, healthy, spawn=ttyguard.popen, notice=None, progress=None
             if supported:
                 keep = [f for f in wanted if f in supported]
             else:
-                keep = wanted if recipe.executable else []
+                keep = wanted if model_defaults.executable else []
             dropped = [f for f in wanted if f not in keep]
             if dropped:
                 why = "its --help does not list them" if supported else "its --help could not be read"
-                _log_event(f"{' '.join(dropped)} left out: {exe} {why}; the recipe's own flags are unchanged")
+                _log_event(f"{' '.join(dropped)} left out: {exe} {why}; the model defaults' own flags are unchanged")
             args += keep
-        # T1383: no --fast-prefill-kernel here. A recipe is one model's measured flag set (DeepSeek
-        # with disk experts); the kernel was not measured there, so the recipe's flags stay as written.
+        # T1383: no --fast-prefill-kernel here. A model defaults file is one model's measured flag set
+        # (DeepSeek with disk experts); the kernel was not measured there, so its flags stay as written.
     else:
         fast_prefill = False
         if getattr(settings, "ninfer_fast_prefill_kernel", True) is True:
@@ -1163,7 +1165,7 @@ def start(settings, *, healthy, spawn=ttyguard.popen, notice=None, progress=None
         family = artifact_model_type(directory)
         cap = family_concurrency_cap(family, conc if isinstance(conc, int) else None)
         if cap is not None:
-            _log_event(f"--max-concurrency {conc} lowered to {cap} for model family {family} (no launch recipe): "
+            _log_event(f"--max-concurrency {conc} lowered to {cap} for model family {family} (no model defaults file): "
                        f"{NINFER_FAMILY_MAX_CONCURRENCY[family][1]}")
         args = build_ninfer_args(
             artifact, port, model_id,
@@ -1179,7 +1181,7 @@ def start(settings, *, healthy, spawn=ttyguard.popen, notice=None, progress=None
     lp = log_path()
     lp.parent.mkdir(parents=True, exist_ok=True)
     log_file = open(lp, "a", encoding="utf-8", errors="replace")  # noqa: SIM115 - the process writes here for its whole life
-    note = f" (launch recipe {recipe.path.name})" if recipe else ""
+    note = f" (model defaults {model_defaults.path.name})" if model_defaults else ""
     log_file.write(f"\n--- litetui spawn {time.strftime('%F %T')}{note} ---\n{exe} {' '.join(args)}\n")
     log_file.flush()
     # 14:1x 2026-09-17: the log is APPENDED across spawns, so a marker from an earlier run
