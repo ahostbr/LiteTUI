@@ -150,7 +150,7 @@ FIELD_DESCRIPTIONS = {
     "ninfer_speed_preset": "DeepSeek speed tier: how many experts stay in RAM and the prefill chunk; Fastest default, falls back when RAM is short.",
     "ninfer_auto_long_anchors": "Experimental, off: NInfer keeps checkpoints at message boundaries so a compacted conversation resumes from one; costs a saved state each.",
     "ninfer_derive_session_keys": "Experimental, off: NInfer derives a session key per conversation so its checkpoints stay retained.",
-    "ninfer_fast_prefill_kernel": "On: NInfer reads long prompts about 9-13% faster on a 27B when the engine supports it; answers may word slightly differently. Off uses the standard kernel.",
+    "ninfer_fast_prefill_kernel": "On: NInfer reads long prompts about 7% faster on a 27B when the engine supports it; decode is not faster and answers may word differently. Off uses the standard kernel.",
     "ninfer_max_context": "Context tokens requested at NInfer startup; larger windows use more GPU memory.",
     "ninfer_max_concurrency": "Requests decoded together by NInfer; parallel requests share its context pool.",
     "ninfer_kv_dtype": "NInfer cache format; higher precision needs more memory, smaller formats save it.",
