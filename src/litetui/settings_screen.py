@@ -1055,6 +1055,13 @@ class SettingsBody(Widget):
                                 "Off by default. Gives each conversation a session key (Chat Completions carries none) so the engine keeps its "
                                 "checkpoints as a live session. A compaction rewrites the first message and starts a new key. Applies on the next /engine start.",
                             )
+                            yield from self._switch_row(
+                                "ninfer_fast_prefill_kernel", "NInfer: fast prefill kernel (--fast-prefill-kernel)",
+                                "On by default. Reads long prompts about 9 to 13% faster on a 27B (measured: a 32,623-token prompt went from 9.4 s "
+                                "to 8.2 s; perplexity 5.8330 -> 5.8338). The wording of answers can differ slightly. Turn it off for the engine's "
+                                "standard kernel. Used only when the engine supports it, and not for a model with a launch recipe. "
+                                "Applies on the next /engine start.",
+                            )
                             yield from self._text_row(
                                 "ninfer_max_context", "NInfer: context length (--max-context)",
                                 "Tokens the engine is started with. 32768 is the ruling; larger costs VRAM (fp8 KV).",

@@ -231,6 +231,29 @@ def test_a_recipe_whose_executable_is_missing_refuses_naming_both_files(tmp_path
     assert spawned == []
 
 
+def test_a_recipe_start_never_adds_the_fast_prefill_kernel(tmp_path):
+    """T1383: the recipe is one model's measured flag set; the kernel was not measured there.
+    The setting is on and the engine lists the flag, and still the recipe argv is untouched."""
+    s, art, exe = _setup(tmp_path)
+    body = _recipe(art, exe)
+    s.ninfer_fast_prefill_kernel = True
+    asked, spawned = [], {}
+
+    def help_run(cmd, **kw):
+        asked.append(cmd)
+        raise AssertionError("a recipe start must not ask the engine for optional flags")
+
+    def spawn(cmd, **kw):
+        spawned["cmd"] = cmd
+        kw["stdout"].write("listening on http://127.0.0.1:49260\n")
+        kw["stdout"].flush()
+        return _Proc()
+
+    eng.start(s, healthy=lambda h: False, spawn=spawn, help_run=help_run)
+    assert "--fast-prefill-kernel" not in spawned["cmd"] and asked == []
+    assert spawned["cmd"][-len(body["args"]):] == body["args"]
+
+
 def test_no_sidecar_keeps_todays_argv(tmp_path):
     exe = tmp_path / "bin" / "ninfer-serve.exe"
     exe.parent.mkdir()

@@ -7,7 +7,9 @@ already recorded once).
 from __future__ import annotations
 
 import json
+import os
 import struct
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -38,6 +40,8 @@ def _no_real_process_ops(monkeypatch):
     # a fake proc has no real exit, so treat it as terminated (round-trip stop tests).
     from litetui import llm_backend as _lb
     monkeypatch.setattr(_lb, "wait_for_exit", lambda proc, **kw: True)
+    # T1383: the --help cache is per test, so one test's fake engine never answers for another's.
+    monkeypatch.setattr(eng, "_ENGINE_FLAGS", {})
 
 
 class _Settings:
@@ -295,6 +299,148 @@ def test_start_passes_the_kv_settings_to_the_spawn(tmp_path, monkeypatch):
     assert cmd[cmd.index("--kv-dtype") + 1] == "bf16"
     assert cmd[cmd.index("--kv-capacity") + 1] == "auto"
     assert cmd[cmd.index("--host-kv-mib") + 1] == "2048"
+    eng.stop(owned)
+
+
+# ── T1383: optional flags read from the engine's own --help; KV only of a type the family takes ──
+#
+# Ryan 2026-11-21: "stop trying to pin engines ... this isnt a private app". The flag ships in
+# LiteTUI, gated on what the engine says it supports; an engine that does not say gets nothing.
+
+HELP_NEW = ("usage: ninfer-serve ARTIFACT [options]\n"
+            "  -h, --help                    show this help\n"
+            "  --kv-dtype TYPE               KV storage: bf16 (default), int8, fp8 ...; mxfp8: Inkling 2 (its default)\n"
+            "  --fast-prefill-kernel         prefill an int8 or rk* KV cache with the fast kernel\n")
+#: An old build: the flag is only NAMED inside another option's description, which is not support.
+HELP_OLD = ("usage: ninfer-serve ARTIFACT [options]\n"
+            "  --kv-dtype TYPE               KV storage (newer builds add --fast-prefill-kernel)\n")
+
+
+def _help_runner(text: str = HELP_NEW, *, returncode: int = 0, raises: Exception | None = None):
+    calls = []
+
+    def run(cmd, **kw):
+        calls.append((cmd, kw))
+        if raises is not None:
+            raise raises
+        return subprocess.CompletedProcess(cmd, returncode, stdout=text, stderr="")
+    return run, calls
+
+
+def test_engine_flags_lists_the_options_of_the_help_and_not_names_in_descriptions(tmp_path):
+    exe = tmp_path / "ninfer-serve.exe"; exe.write_bytes(b"MZ")
+    run, calls = _help_runner()
+    flags = eng.engine_flags(exe, run=run)
+    assert {"--help", "--kv-dtype", "--fast-prefill-kernel"} <= flags
+    assert calls[0][0] == [str(exe), "--help"] and calls[0][1]["cwd"] == str(tmp_path)   # CUDA DLLs beside it
+    old = tmp_path / "old" / "ninfer-serve.exe"; old.parent.mkdir(); old.write_bytes(b"MZ")
+    assert eng.engine_flags(old, run=_help_runner(HELP_OLD)[0]) == frozenset({"--kv-dtype"})
+
+
+def test_engine_flags_reads_the_help_once_per_build_and_again_when_the_exe_changes(tmp_path):
+    exe = tmp_path / "ninfer-serve.exe"; exe.write_bytes(b"MZ")
+    run, calls = _help_runner()
+    eng.engine_flags(exe, run=run); eng.engine_flags(exe, run=run)
+    assert len(calls) == 1
+    exe.write_bytes(b"MZ-rebuilt")                       # size changes
+    eng.engine_flags(exe, run=run)
+    assert len(calls) == 2
+    st = exe.stat()
+    os.utime(exe, ns=(st.st_atime_ns, st.st_mtime_ns + 5_000_000_000))   # same size, new mtime
+    eng.engine_flags(exe, run=run)
+    assert len(calls) == 3
+
+
+@pytest.mark.parametrize("runner", [
+    _help_runner(raises=subprocess.TimeoutExpired(["x"], 15))[0],
+    _help_runner(returncode=2)[0],
+    _help_runner(raises=OSError("[WinError 193] not a valid Win32 application"))[0],
+    _help_runner(text="")[0],
+], ids=["timeout", "non-zero-exit", "cannot-run", "no-options"])
+def test_engine_flags_is_empty_and_never_raises_when_the_help_fails(tmp_path, runner):
+    exe = tmp_path / "ninfer-serve.exe"; exe.write_bytes(b"MZ")
+    assert eng.engine_flags(exe, run=runner) == frozenset()
+    # a failure is not cached: the next start asks again and gets the real answer
+    assert "--fast-prefill-kernel" in eng.engine_flags(exe, run=_help_runner()[0])
+
+
+def test_engine_flags_of_a_missing_exe_is_empty_without_running_anything(tmp_path):
+    run, calls = _help_runner()
+    assert eng.engine_flags(tmp_path / "gone.exe", run=run) == frozenset() and calls == []
+
+
+def test_start_passes_the_fast_prefill_kernel_when_the_engine_lists_it(tmp_path, monkeypatch):
+    s, spawn, spawned = _ready_engine(tmp_path, monkeypatch, log_text="listening on http://127.0.0.1:49260\n")
+    run, calls = _help_runner()
+    owned = eng.start(s, healthy=lambda h: False, spawn=spawn, help_run=run)
+    assert "--fast-prefill-kernel" in spawned["cmd"] and len(calls) == 1
+    eng.stop(owned)
+    spawned.clear()
+    owned = eng.start(s, healthy=lambda h: False, spawn=spawn, help_run=run)   # same exe: no second --help
+    assert "--fast-prefill-kernel" in spawned["cmd"] and len(calls) == 1
+    eng.stop(owned)
+
+
+def test_an_old_engine_starts_without_the_flag_no_error_and_one_log_line(tmp_path, monkeypatch):
+    s, spawn, spawned = _ready_engine(tmp_path, monkeypatch, log_text="listening on http://127.0.0.1:49260\n")
+    owned = eng.start(s, healthy=lambda h: False, spawn=spawn, help_run=_help_runner(HELP_OLD)[0])
+    assert "--fast-prefill-kernel" not in spawned["cmd"]
+    log = eng.log_path().read_text(encoding="utf-8")
+    assert log.count("--fast-prefill-kernel left out") == 1 and "does not list it" in log
+    eng.stop(owned)
+
+
+def test_an_engine_whose_help_fails_starts_without_the_flag(tmp_path, monkeypatch):
+    s, spawn, spawned = _ready_engine(tmp_path, monkeypatch, log_text="listening on http://127.0.0.1:49260\n")
+    run = _help_runner(raises=subprocess.TimeoutExpired(["x"], 15))[0]
+    owned = eng.start(s, healthy=lambda h: False, spawn=spawn, help_run=run)
+    assert "--fast-prefill-kernel" not in spawned["cmd"]
+    assert "could not be read" in eng.log_path().read_text(encoding="utf-8")
+    eng.stop(owned)
+
+
+def test_the_setting_off_leaves_the_flag_out_and_never_asks_the_engine(tmp_path, monkeypatch):
+    s, spawn, spawned = _ready_engine(tmp_path, monkeypatch, log_text="listening on http://127.0.0.1:49260\n")
+    s.ninfer_fast_prefill_kernel = False
+    run, calls = _help_runner()
+    owned = eng.start(s, healthy=lambda h: False, spawn=spawn, help_run=run)
+    assert "--fast-prefill-kernel" not in spawned["cmd"] and calls == []
+    eng.stop(owned)
+
+
+def _with_text_config(model_type: str) -> dict:
+    return {"model_id": "m", "components": {"text": {"config": {"model_type": model_type}}, "mtp": {}}}
+
+
+def test_the_model_family_is_read_from_the_text_component_config():
+    assert eng.artifact_model_type(_with_text_config("inkling2")) == "inkling2"
+    for missing in (None, {}, {"components": ["text"]}, {"components": {"text": {}}},
+                    {"components": {"text": {"config": {"model_type": 3}}}}):
+        assert eng.artifact_model_type(missing) is None
+
+
+def test_inkling_gets_no_kv_dtype_it_does_not_take_and_its_own_when_it_does():
+    def kv(args):
+        return args[args.index("--kv-dtype") + 1] if "--kv-dtype" in args else None
+    assert kv(eng.build_ninfer_args(Path("a"), 1, "m", model_type="inkling2")) is None          # stock fp8
+    assert kv(eng.build_ninfer_args(Path("a"), 1, "m", model_type="inkling2", kv_dtype="rk4v4")) == "rk4v4"
+    assert kv(eng.build_ninfer_args(Path("a"), 1, "m", model_type="inkling2", kv_dtype="int8")) is None
+    # every other family exactly as before
+    assert kv(eng.build_ninfer_args(Path("a"), 1, "m", model_type="qwen3_5_text")) == "fp8"
+    assert kv(eng.build_ninfer_args(Path("a"), 1, "m", model_type="qwen3_5_text", kv_dtype="rk4v4")) == "fp8"
+    assert kv(eng.build_ninfer_args(Path("a"), 1, "m")) == "fp8"
+
+
+def test_start_sends_no_kv_dtype_for_an_inkling_artifact_and_fp8_for_a_qwen_one(tmp_path, monkeypatch):
+    s, spawn, spawned = _ready_engine(tmp_path, monkeypatch, log_text="listening on http://127.0.0.1:49260\n")
+    s.ninfer_kv_dtype = "fp8"
+    monkeypatch.setattr(eng, "read_artifact_directory", lambda p: _with_text_config("inkling2"))
+    owned = eng.start(s, healthy=lambda h: False, spawn=spawn, help_run=_help_runner()[0])
+    assert "--kv-dtype" not in spawned["cmd"]
+    eng.stop(owned)
+    monkeypatch.setattr(eng, "read_artifact_directory", lambda p: _with_text_config("qwen3_5_text"))
+    owned = eng.start(s, healthy=lambda h: False, spawn=spawn, help_run=_help_runner()[0])
+    assert spawned["cmd"][spawned["cmd"].index("--kv-dtype") + 1] == "fp8"
     eng.stop(owned)
 
 

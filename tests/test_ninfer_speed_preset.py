@@ -96,6 +96,14 @@ def test_each_cache_flag_is_added_only_when_switched_on():
     assert ne.cache_flags(s) == ["--derive-session-keys"]
 
 
+def test_the_fast_prefill_kernel_setting_defaults_on_and_is_not_a_cache_flag():
+    """T1383: on by default (gated in ninfer_engine.start on the engine's --help); never part of
+    cache_flags, so a launch recipe does not get it."""
+    s = Settings()
+    assert s.ninfer_fast_prefill_kernel is True
+    assert "--fast-prefill-kernel" not in ne.cache_flags(s)
+
+
 def test_a_truthy_non_bool_does_not_switch_a_flag_on():
     class Fake:
         ninfer_auto_long_anchors = "yes"
