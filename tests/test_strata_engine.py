@@ -154,7 +154,7 @@ def test_memory_gate_does_not_refuse_on_what_it_cannot_measure(monkeypatch):
     assert eng.memory_refusal(mapped, ram_free=8 * GB, commit_free=8 * GB, gpu=None) is None
 
 
-# ── the launch recipe ────────────────────────────────────────────────────────
+# ── the launch plan ──────────────────────────────────────────────────────────
 
 def test_launch_plan_is_stratas_own_start_line(tmp_path):
     settings, (cfg_path,) = _install(tmp_path, "iq3_xxs", port=8090)

@@ -148,7 +148,7 @@ def test_a_qwen_config_in_a_xolotl_checkout_keeps_stratas_native_rule(monkeypatc
     assert "Strata pins about" in eng.memory_refusal(qwen, ram_free=40 * GB, commit_free=78 * GB, gpu=None)
 
 
-# ── the launch recipe ────────────────────────────────────────────────────────
+# ── the launch plan ──────────────────────────────────────────────────────────
 
 def test_launch_plan_is_the_docs_serve_line(tmp_path):
     settings, (cfg_path,) = _install(tmp_path, "ds41-1017-v3", port=8150)

@@ -131,8 +131,8 @@ class Settings:
     ninfer_kv_capacity: str = ""
     #: --host-kv-mib (serving.md:786): pinned host RAM for spilled KV. None = engine default 8192.
     ninfer_host_kv_mib: int | None = None
-    #: Speed tier for a DeepSeek launch recipe (ninfer_engine.SPEED_PRESETS): fastest | fast | standard | recipe. It sets two flags of the
-    #: recipe, --expert-host-mib and --prefill-chunk. Startup flag: next /engine start.
+    #: Speed tier for DeepSeek's model defaults (ninfer_engine.SPEED_PRESETS): fastest | fast | standard | recipe (the stored value of
+    #: "Model defaults as written"). It sets two of those flags, --expert-host-mib and --prefill-chunk. Startup flag: next /engine start.
     ninfer_speed_preset: str = "fastest"
     #: --auto-long-anchors (serving.md, context cache): the engine anchors message boundaries of every request, so a compacted or edited
     #: transcript resumes from the nearest anchor instead of from token 0. Costs one saved model state per anchor (VRAM/RAM). OFF by default.
@@ -141,7 +141,7 @@ class Settings:
     #: first user message, so the conversation keeps a session lineage and live-session retention. A compaction starts a new key. OFF by default.
     ninfer_derive_session_keys: bool = False
     #: --fast-prefill-kernel: ON by default, passed only when the engine's --help lists it (ninfer_engine.engine_flags) and only on a
-    #: start without a launch recipe. Measured 2026-11-21 on a 27B: a cold 32,623-token prompt averaged 9,198 -> 8,506 ms (about 7%,
+    #: start without model defaults. Measured 2026-11-21 on a 27B: a cold 32,623-token prompt averaged 9,198 -> 8,506 ms (about 7%,
     #: four runs each, two builds), perplexity 5.8330 -> 5.8338; decode is not faster. That is the default fp8 cache on a build from
     #: 2026-11-21 or newer: older builds have the fast kernel only for int8, rk* and nvfp4 caches and change nothing at fp8.
     ninfer_fast_prefill_kernel: bool = True

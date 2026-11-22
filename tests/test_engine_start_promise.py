@@ -119,7 +119,7 @@ def test_engine_lanes_sets_the_next_starts_concurrency(monkeypatch):
 
 
 def test_engine_lanes_says_when_the_chosen_model_will_start_with_one_lane(tmp_path, monkeypatch):
-    """T1383: an Inkling 2 artifact without a recipe starts with one sequence (it keeps its drafter),
+    """T1383: an Inkling 2 artifact without model defaults starts with one sequence (it keeps its drafter),
     so `/engine lanes 4` must not promise 4 for it. The setting is still saved for other models."""
     from litetui import settings as settings_mod
     from litetui.settings import Settings

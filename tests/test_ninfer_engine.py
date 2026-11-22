@@ -482,14 +482,15 @@ def test_lanes_note_names_the_family_only_when_its_start_will_be_lowered(tmp_pat
     s.ninfer_artifact = str(_artifact(tmp_path, _with_text_config("inkling2")))
     note = eng.lanes_note(s, 4)
     assert "inkling2" in note and "1 lane" in note and "drafter" in note
+    assert "defaults file can ask for more" in note and "recipe" not in note.lower()   # T1383-B: Ryan's word is model defaults
     assert eng.lanes_note(s, 1) == ""
     s.ninfer_artifact = str(_artifact(tmp_path, _with_text_config("qwen3_5_text")))
     assert eng.lanes_note(s, 4) == ""
     s.ninfer_artifact = str(_artifact(tmp_path, _with_text_config("inkling2")))
-    eng.recipe_path(Path(s.ninfer_artifact)).write_text("{bad", encoding="utf-8")
-    assert eng.lanes_note(s, 4) == ""                          # a bad recipe: never raises
-    eng.recipe_path(Path(s.ninfer_artifact)).write_text(json.dumps({"version": 1, "args": []}), encoding="utf-8")
-    assert eng.lanes_note(s, 4) == ""                          # a recipe start keeps the user's lanes
+    eng.model_defaults_path(Path(s.ninfer_artifact)).write_text("{bad", encoding="utf-8")
+    assert eng.lanes_note(s, 4) == ""                          # bad model defaults: never raises
+    eng.model_defaults_path(Path(s.ninfer_artifact)).write_text(json.dumps({"version": 1, "args": []}), encoding="utf-8")
+    assert eng.lanes_note(s, 4) == ""                          # a model defaults start keeps the user's lanes
 
 
 def test_an_earlier_runs_ready_line_does_not_count(tmp_path, monkeypatch):
