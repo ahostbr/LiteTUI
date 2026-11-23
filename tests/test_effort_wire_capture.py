@@ -118,6 +118,56 @@ async def test_qwen_on_ninfer_gets_its_own_names_and_a_saved_high_lands_on_xhigh
     assert "[effort xhigh]" in engine.render(body)
 
 
+async def _plain_turn(a, pilot):
+    a.conversation = [{"role": "system", "content": "Test host"}]
+    a._append({"role": "user", "content": "hello"})
+    a._stream()
+    async with asyncio.timeout(20):
+        while a._chat_running():
+            await pilot.pause()
+            await asyncio.sleep(0.01)
+    await pilot.pause()
+
+
+def _probes(engine):
+    return [path for method, path, _ in engine.requests if method == "POST" and path == "/apply-template"]
+
+
+@pytest.mark.asyncio
+async def test_a_scale_that_cannot_be_read_is_not_probed_again_on_the_next_turn(tmp_path, monkeypatch):
+    """Prefix 5c1db80f: an engine with no /apply-template and no readable template must not get the
+    same failed probes on every turn. Two turns, one round of probes; the turns themselves still go."""
+    import litetui.app as app_mod
+
+    engine = FakeEngine(tmp_path, "ninfer", "qwen", apply_template=False, serve_chat=True, model_id=MODEL)
+    engine.artifact.write_bytes(b"not an artifact")
+    try:
+        a = _app(_ninfer(engine.host))
+        async with a.run_test(size=(120, 40)) as pilot:
+            await _plain_turn(a, pilot)
+            first = len(_probes(engine))
+            await _plain_turn(a, pilot)
+            second = len(_probes(engine))
+            assert first > 0, "the first turn must try to read the scale"
+            assert second == first, f"turn 2 re-probed: {first} -> {second} /apply-template posts"
+            # Each turn and its side call (the card summary) went out; neither re-probed.
+            assert len(_turn_bodies(engine)) >= 2
+
+            # A minute later it is asked again (an engine may have come up with the template).
+            monkeypatch.setattr(app_mod, "EFFORT_SCALE_MISS_TTL", 0.0)
+            await _plain_turn(a, pilot)
+            assert len(_probes(engine)) > second
+            third = len(_probes(engine))
+
+            # Another model is another key: asked at once, inside the minute.
+            monkeypatch.setattr(app_mod, "EFFORT_SCALE_MISS_TTL", 60.0)
+            a.model_id = "another-model"
+            a._effort_scale_now()
+            assert len(_probes(engine)) > third
+    finally:
+        engine.close()
+
+
 def test_the_render_helper_is_the_inkling_template_rule():
     """Guard for the table above: the fake's printer is inkling2.jinja's emit_thinking_effort."""
     assert _inkling_prompt(None).count("0.9") == 1

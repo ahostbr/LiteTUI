@@ -7,7 +7,8 @@ because every tools-off refusal names that key to the user and to the model.
 """
 from functools import partial
 
-from litetui.effort_scale import NONE, app_scale, as_level, backend_label, describe, is_number
+from litetui.effort_scale import (NONE, app_scale, as_level, backend_label, describe, is_number, number_hint,
+                                  number_refusal, parse_number)
 from litetui.picker import pick
 from litetui.settings import THINKING_LEVELS
 from litetui.thinking_capabilities import backend_levels
@@ -117,6 +118,9 @@ def _thinking_rows(app) -> list[tuple[str, str]]:
         if is_number(as_level(app.thinking_level)):
             rows.append((app.thinking_level,
                          "manual · " + describe(app.thinking_level, scale)[0].removeprefix("think:")))
+        if scale.numbers:
+            # Prefix 5c1db80f: a manual number from the picker, not only from `/think 0.1`.
+            rows.append((NUMBER_ROW, f"number…  · type one ({number_hint(scale)})"))
         rows.append((UNSET, "unset  · the field is not sent; the template's default applies"))
         return rows
     if reported is not None:
@@ -145,7 +149,32 @@ def _on_thinking_picked(app, level: str | None) -> None:
     # Esc resolves with None and the callback still fires — see picker.pick.
     if level is None:
         return
+    if level == NUMBER_ROW:
+        _ask_thinking_number(app)
+        return
     _apply_thinking_level(app, level)
+
+
+def _ask_thinking_number(app) -> None:
+    """The picker's number row: ask, check each answer with the rule `/think <n>` uses, then apply."""
+    from litetui.number_choice import ask_number
+
+    scale = app_scale(app)
+    label = backend_label(app)
+
+    def check(text: str):
+        number = parse_number(text)
+        if number is None:
+            raise ValueError(f"{text.strip() or '(blank)'!s} is not a number: type one like 0.1")
+        why = number_refusal(number, scale, label)
+        if why:
+            raise ValueError(f"{format(number, 'g')} not set: {why}")
+        return number
+
+    current = as_level(app.thinking_level)
+    ask_number(app, "Thinking number for this model", number_hint(scale),
+               format(current, "g") if is_number(current) else "", check,
+               lambda number: number is not None and _apply_thinking_number(app, number))
 
 
 def _cmd_think(app, name: str, arg: str) -> None:
@@ -169,22 +198,21 @@ def _cmd_think(app, name: str, arg: str) -> None:
         _apply_thinking_number(app, _as_number(arg))
     elif arg.lower() in (UNSET, "default", "server"):
         _apply_thinking_level(app, UNSET)
-    elif arg.lower() in [level for level, _ in _thinking_rows(app)]:
+    elif arg.lower() in _typed_levels(app):
         _apply_thinking_level(app, arg.lower())
     else:
-        app.system_message(
-            f"Unknown level: {arg}\nValid: {', '.join(level for level, _ in _thinking_rows(app))}"
-        )
+        app.system_message(f"Unknown level: {arg}\nValid: {', '.join(_typed_levels(app))}")
 
 
-def _as_number(arg: str):
-    """`/think 0.1` -> 0.1, `/think 60` -> 60 (an int: DeepSeek's template takes integers); else None."""
-    text = arg.strip()
-    try:
-        number = int(text) if text.isdigit() else float(text)
-    except ValueError:
-        return None
-    return number if is_number(number) else None
+def _typed_levels(app) -> list[str]:
+    """What `/think <word>` takes: the picker's level rows (the number row is the picker's own)."""
+    return [str(level) for level, _ in _thinking_rows(app) if level != NUMBER_ROW]
+
+
+#: The /think picker row that asks for a manual number (an id no level can have).
+NUMBER_ROW = "number…"
+
+_as_number = parse_number
 
 
 def _apply_thinking_number(app, number) -> None:
@@ -192,23 +220,21 @@ def _apply_thinking_number(app, number) -> None:
 
     Accepted when this model's template maps numbers and the server carries one, or when the number
     is exactly one of the template's own values (sent as that name). Otherwise refused, with why and
-    the numbers that would work. Nothing is stored on a refusal.
+    the numbers that would work. Nothing is stored on a refusal. The rule is effort_scale.number_refusal,
+    shared with the picker's number row, the Settings manual box and set_thinking.
     """
     scale = app_scale(app)
     shown = format(number, "g")
-    if scale is None or not scale.template_read:
+    if scale is None:
         reader = getattr(getattr(app, "backend", None), "effort_scale", None)
-        if callable(reader) and getattr(app, "model_id", None) and scale is None:
+        if callable(reader) and getattr(app, "model_id", None):
             discover = getattr(app, "_discover_effort_scale", None)
             if callable(discover):
                 discover()
             app.system_message(f"{shown} not set: this model's effort scale has not been read yet "
                                "(it is read from the served template) — try again in a moment.")
             return
-        app.system_message(f"{shown} not set: {backend_label(app)} takes level names only "
-                           "(a number needs a model whose template maps effort numbers).")
-        return
-    why = scale.refuse_number(number)
+    why = number_refusal(number, scale, backend_label(app))
     if why:
         app.system_message(f"{shown} not set: {why}")
         return

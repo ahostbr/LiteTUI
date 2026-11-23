@@ -257,7 +257,55 @@ APP_EDITS_4 = [
 """, 1),
 ]
 
-if __name__ == "__main__" and sys.argv[1:] == ["4"]:
+APP_EDITS_5 = [
+    # Prefix 5c1db80f item 2: a scale that could not be read is remembered for a minute, so a turn
+    # on an engine with no /apply-template and no readable template does not re-probe every time.
+    ("""        that reads no template. A scale whose template could not be read is not cached, so an
+        engine that comes up later is asked again.\"\"\"
+""", """        that reads no template. A scale whose template could not be read is remembered for EFFORT_SCALE_MISS_TTL
+        seconds only (Prefix 5c1db80f: no turn waits on the same failed probes again), so an
+        engine that comes up later is still asked again. The key is (backend, host, model):
+        changing any of them asks at once.\"\"\"
+""", 1),
+    ("""        if key in scales:
+            return scales[key]
+        try:
+            scale = reader(self.model_id)
+        except Exception:
+            scale = None
+        if scale is not None and scale.template_read:
+            scales[key] = scale
+        return scale
+""", """        if key in scales:
+            return scales[key]
+        misses = getattr(self, "_effort_scale_misses", None)
+        if misses is None:
+            misses = self._effort_scale_misses = {}
+        miss = misses.get(key)
+        if miss is not None and time.monotonic() - miss[0] < EFFORT_SCALE_MISS_TTL:
+            return miss[1]
+        try:
+            scale = reader(self.model_id)
+        except Exception:
+            scale = None
+        if scale is not None and scale.template_read:
+            scales[key] = scale
+            misses.pop(key, None)
+        else:
+            misses[key] = (time.monotonic(), scale)
+        return scale
+""", 1),
+    ("""LEAST_THINKING_FALLBACK = "low"
+""", """LEAST_THINKING_FALLBACK = "low"
+
+#: T1398 (Prefix 5c1db80f): how long a model whose effort scale could not be read is not asked again.
+EFFORT_SCALE_MISS_TTL = 60.0
+""", 1),
+]
+
+if __name__ == "__main__" and sys.argv[1:] == ["5"]:
+    patch(APP, APP_EDITS_5)
+elif __name__ == "__main__" and sys.argv[1:] == ["4"]:
     patch(APP, APP_EDITS_4)
 elif __name__ == "__main__" and sys.argv[1:] == ["3"]:
     patch(APP, APP_EDITS_3)

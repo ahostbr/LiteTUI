@@ -247,6 +247,43 @@ class EffortScale:
                         f"{self.refuse_number(number) or ''}".rstrip(": "))
 
 
+def parse_number(text):
+    """A typed reasoning number: "0.1" -> 0.1, "60" -> 60 (an int: DeepSeek's template takes integers);
+    anything else, including "nan", "inf" and negatives, -> None."""
+    text = str(text).strip()
+    try:
+        number = int(text) if text.isdigit() else float(text)
+    except ValueError:
+        return None
+    return number if is_number(number) else None
+
+
+def number_refusal(number, scale: EffortScale | None, backend_label: str = "this backend") -> str | None:
+    """Why `number` cannot be CHOSEN as the thinking level for this model, or None when it can.
+
+    ONE rule for every place a number is typed: /think <n>, the /think picker's number row, the
+    Settings "manual number" box and set_thinking (RPC/GUI). Choosing is stricter than sending: a number
+    saved earlier under another model still resolves (nearest, said in the UI), but a new one is refused.
+    """
+    if not is_number(number):
+        return f"{number!r} is not a reasoning number (a finite number >= 0)."
+    if scale is None or not scale.template_read:
+        return (f"{backend_label} takes level names only here: a number needs a model whose template "
+                "was read and maps effort numbers.")
+    return scale.refuse_number(number)
+
+
+def number_hint(scale: EffortScale | None) -> str:
+    """What may be typed for this model, said before it is typed."""
+    if scale is None or not scale.template_read or not scale.numbers:
+        return "This model takes level names only."
+    if scale.number_wire:
+        top = _show(max(scale.numbers.values(), key=float))
+        whole = ", whole numbers only" if scale.integer_only else ""
+        return f"Any number from 0 to {top}{whole}."
+    return f"This server sends only the template's own numbers: {', '.join(scale.sendable_numbers())}."
+
+
 def app_scale(app) -> EffortScale | None:
     """The app's cached scale for its current model, or None (never blocks, never raises)."""
     cached = getattr(app, "_cached_effort_scale", None)

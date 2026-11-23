@@ -185,6 +185,9 @@ STORE_HEADER = appsvc.STORE_HEADER
 # was dropped. Detect the MECHANISM (a trace exists), never the string.
 LEAST_THINKING_FALLBACK = "low"
 
+#: T1398 (Prefix 5c1db80f): how long a model whose effort scale could not be read is not asked again.
+EFFORT_SCALE_MISS_TTL = 60.0
+
 # How many trailing messages /compact keeps verbatim after the summary.
 COMPACT_KEEP_RECENT = 4
 
@@ -7768,8 +7771,10 @@ class LiteTUI(App):
     def _effort_scale_now(self):
         """T1398: the current model's EffortScale, read on first use. BLOCKING (renders through
         the engine's /apply-template, never generates): call it in a thread. None for a backend
-        that reads no template. A scale whose template could not be read is not cached, so an
-        engine that comes up later is asked again."""
+        that reads no template. A scale whose template could not be read is remembered for EFFORT_SCALE_MISS_TTL
+        seconds only (Prefix 5c1db80f: no turn waits on the same failed probes again), so an
+        engine that comes up later is still asked again. The key is (backend, host, model):
+        changing any of them asks at once."""
         reader = getattr(getattr(self, "backend", None), "effort_scale", None)
         if not callable(reader) or not getattr(self, "model_id", None):
             return None
@@ -7779,12 +7784,21 @@ class LiteTUI(App):
             scales = self._effort_scales = {}
         if key in scales:
             return scales[key]
+        misses = getattr(self, "_effort_scale_misses", None)
+        if misses is None:
+            misses = self._effort_scale_misses = {}
+        miss = misses.get(key)
+        if miss is not None and time.monotonic() - miss[0] < EFFORT_SCALE_MISS_TTL:
+            return miss[1]
         try:
             scale = reader(self.model_id)
         except Exception:
             scale = None
         if scale is not None and scale.template_read:
             scales[key] = scale
+            misses.pop(key, None)
+        else:
+            misses[key] = (time.monotonic(), scale)
         return scale
 
     @work(thread=True, group="effort-scale", exclusive=True)
