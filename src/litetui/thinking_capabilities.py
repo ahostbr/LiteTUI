@@ -91,16 +91,14 @@ def thinking_capabilities(app):
 
 
 def set_thinking(app, level):
-    from litetui.effort_scale import app_scale, as_level, is_number
+    from litetui.effort_scale import app_scale, as_level, backend_label, is_number, number_refusal
 
     level = as_level(level)
     if level is None or level == "default":
         value = None
     elif is_number(level):
-        # T1398: the rule /think uses (plugins/misc._apply_thinking_number), so RPC and GUI agree.
-        scale = app_scale(app)
-        why = (scale.refuse_number(level) if scale is not None and scale.template_read
-               else "this backend/model takes level names only")
+        # T1398: the rule /think uses (effort_scale.number_refusal), so RPC and GUI agree.
+        why = number_refusal(level, app_scale(app), backend_label(app))
         if why:
             raise ValueError(f"Thinking number {level!r} refused: {why}")
         value = level
