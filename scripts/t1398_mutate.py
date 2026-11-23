@@ -33,6 +33,16 @@ ARMS = {
                             "        if all(nearest_accepted(name, choice) == choice[i] for i, group in enumerate(members) for name in group):",
                             "        if True:",
                             ["tests/test_effort_discovery.py"]),
+    # The app's chat turn does not pass the scale (single line; app.py is mixed-EOL).
+    "app-turn-ignores-scale": ("src/litetui/app.py",
+                               "                effort_scale=effort_scale,",
+                               "                effort_scale=None,",
+                               ["tests/test_effort_wire_capture.py"]),
+    # The re-pin forgets where the chat turn put the effort.
+    "pin-ignores-placement": ("src/litetui/turn_engine.py",
+                              "        if placement == \"kwargs\":",
+                              "        if False:",
+                              ["tests/test_effort_scale.py"]),
     # Bools pass as numbers.
     "bool-is-a-number": ("src/litetui/settings.py",
                          "    if isinstance(raw, bool):\n        raise ValueError",
