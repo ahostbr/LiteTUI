@@ -495,3 +495,13 @@ def test_the_proxy_stops_with_shutdown_and_leaves_no_listener():
     egress_proxy.shutdown()
     with pytest.raises(OSError):
         socket.create_connection(("127.0.0.1", port), timeout=2)
+
+
+def test_an_mcp_server_url_in_a_blocked_range_is_refused_at_connect(_isolated):
+    from pathlib import Path
+    from litetui import mcp_client
+    for url in (f"http://{CN_V4}:7423/mcp", "http://cn-one.test:7423/mcp", "https://mcp.aliyuncs.com/x"):
+        srv = mcp_client.HTTPMCPServer("remote", {"url": url}, Path("."), None)
+        with pytest.raises(mcp_client.MCPError, match="egress blocked"):
+            srv.start()
+    assert [json.loads(ln)["via"] for ln in _isolated.log.read_text(encoding="utf-8").splitlines()] == ["mcp-connect"] * 3
