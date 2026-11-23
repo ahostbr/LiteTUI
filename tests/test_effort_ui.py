@@ -308,6 +308,15 @@ async def _open_settings_at_thinking(a, pilot):
     body.query_one("#set-search", Input).value = "Thinking level"
     await pilot.pause()
     await pilot.pause()
+    # The search lands on its first hit (the Model tab's "Graded thinking works on"); the picture
+    # must show THIS row, so open Generation > Reasoning and bring the row into view.
+    from textual.widgets import TabbedContent
+
+    body.query_one("#set-tabs", TabbedContent).active = "tab-generation"
+    await pilot.pause()
+    body.query_one("#f-thinking_level").scroll_visible(animate=False)
+    await pilot.pause()
+    await pilot.pause()
     return body
 
 
