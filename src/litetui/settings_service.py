@@ -175,7 +175,17 @@ class SettingsService:
                 raise ValueError(f'Invalid persistence scope for {change.key}: {change.scope}')
             declared = str(next(f.type for f in fields(st.Settings) if f.name == change.key))
             value = change.value
-            if value is None:
+            if change.key in st.THINKING_FIELDS:
+                # T1398: a level name from ThinkingLevel, or a manual number (finite, >= 0, never a
+                # bool). The Literal check below no longer sees these fields (their hint is a Union).
+                import typing
+                if isinstance(value, str) and value not in typing.get_args(st.ThinkingLevel):
+                    raise ValueError(f'Invalid value for {change.key}: expected one of '
+                                     f'{typing.get_args(st.ThinkingLevel)} or a number')
+                if not isinstance(value, str):
+                    st.coerce_thinking_level(change.key, value)
+                valid = True
+            elif value is None:
                 valid = 'None' in declared
             elif 'bool' in declared:
                 valid = type(value) is bool
