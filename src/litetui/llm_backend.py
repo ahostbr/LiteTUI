@@ -1622,6 +1622,37 @@ class LlamaCppBackend(_VramGate):
             return (int(ctx) if ctx else None), mtype, True
         return None, mtype, False
 
+    def effort_scale(self, key: str | None):
+        """The model's `effort_scale.EffortScale` from its own template (T1398), or None.
+
+        Blocking: call it in a thread. `/props` carries the template text (`chat_template`,
+        tools/server/server-context.cpp:5696); names and the number channel come from
+        `/apply-template`, which renders and never generates. NEVER for a router model that is not
+        loaded: a render request names the model, and the router could load it to answer.
+        None when nothing could be read, so the turn keeps the verbatim path it has today.
+        """
+        from urllib.parse import quote
+
+        from litetui.effort_scale import discover_scale, http_post
+
+        if not key:
+            return None
+        try:
+            if self._probe_shape() == _SHAPE_SINGLE:
+                props = self._props_sync()
+            else:
+                info = self._server_models().get(key) or {}
+                if (info.get("status") or {}).get("value") != "loaded":
+                    return None
+                props = _http_json(f"{self.host()}/props?model={quote(key)}", timeout=5)
+        except Exception:
+            return None
+        template = props.get("chat_template") if isinstance(props, dict) else None
+        scale = discover_scale(http_post(self.host()), model=key,
+                               template=template if isinstance(template, str) else None,
+                               source="the template llama.cpp /props reports")
+        return scale if scale.template_read else None
+
     # -- readiness ---------------------------------------------------------
 
     async def ensure_chat_ready(self, key: str | None) -> None:

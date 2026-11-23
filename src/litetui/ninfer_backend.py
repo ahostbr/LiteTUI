@@ -652,6 +652,32 @@ class NInferBackend(OwnedEngineLifecycle):
             return list(NINFER_DEEPSEEK_REASONING_LEVELS)
         return list(NINFER_REASONING_LEVELS)
 
+    def effort_scale(self, model: str | None = None):
+        """The served model's `effort_scale.EffortScale` (T1398), or None with no engine to ask.
+
+        Blocking: call it in a thread. The template comes out of the artifact `/props` names
+        (`model_path`, ninfer src/serve/http_server.cpp:1188); names and the number channel come from
+        `/apply-template`, which renders and never generates. When neither answers, the scale is the
+        static list above with template_read False: names go out verbatim and NInfer maps them.
+        """
+        from pathlib import Path
+
+        from litetui.effort_scale import discover_scale, http_post
+
+        host = self._resolve_host()
+        served = model or self._model_id
+        if host is None or not served:
+            return None
+        try:
+            path = self._get_json(f"{host}/props", timeout=5.0).get("model_path")
+        except BackendError:
+            path = None
+        template = (ninfer_engine.read_artifact_text_resource(Path(path), "chat_template.jinja")
+                    if isinstance(path, str) and path else None)
+        return discover_scale(http_post(host), model=served, template=template,
+                              fallback_names=self.reasoning_levels(served),
+                              source=f"template in {Path(path).name}" if template else "")
+
     def reload_hint(self, rec: dict | None = None) -> str:
         """What a human should do to bring this seat's model back (T806).
 

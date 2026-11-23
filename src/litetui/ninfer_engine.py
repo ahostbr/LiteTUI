@@ -452,6 +452,48 @@ def read_artifact_directory(path: Path) -> dict | None:
         return None
 
 
+#: The v3 payload starts at the directory's end rounded up to this (ninfer src/artifact/framing.h:18).
+NINFER_PAYLOAD_ALIGNMENT = 4096
+#: A text resource larger than this is not a chat template; refuse rather than read gigabytes.
+NINFER_MAX_TEXT_RESOURCE_BYTES = 4 * 1024 * 1024
+
+
+def read_artifact_text_resource(path: Path, role: str) -> str | None:
+    """A text resource stored in the artifact (e.g. "chat_template.jinja"), or None.
+
+    T1398: the served template is the authority for a model's effort scale, and NInfer's /props names
+    the artifact (`model_path`) but not the template. The template is a `raw_bytes_v1` object listed
+    under a component's `resources`; its bytes start at align_up(32 + json_bytes, 4096) + offset
+    (ninfer src/artifact/reader.cpp:49). Reads the header and that one small object, never weights.
+    Measured 2026-11-23 on the Inkling 2 Mini artifact: 6,868 bytes, byte-identical to its hf/ copy.
+    """
+    directory = read_artifact_directory(path)
+    if not directory:
+        return None
+    comps = directory.get("components")
+    objects = directory.get("objects")
+    if not isinstance(comps, dict) or not isinstance(objects, list):
+        return None
+    ordered = sorted(comps.items(), key=lambda item: item[0] != "text")   # the text component first
+    object_id = next((c["resources"][role] for _, c in ordered
+                      if isinstance(c, dict) and isinstance(c.get("resources"), dict)
+                      and isinstance(c["resources"].get(role), str)), None)
+    entry = next((o for o in objects if isinstance(o, dict) and o.get("id") == object_id), None)
+    if (entry is None or entry.get("encoding") != "raw_bytes_v1"
+            or not isinstance(entry.get("offset"), int) or not isinstance(entry.get("bytes"), int)
+            or not 0 < entry["bytes"] <= NINFER_MAX_TEXT_RESOURCE_BYTES):
+        return None
+    try:
+        with open(path, "rb") as f:
+            (json_bytes,) = struct.unpack_from("<Q", f.read(NINFER_V3_HEADER_BYTES), 8)
+            base = -(-(NINFER_V3_HEADER_BYTES + json_bytes) // NINFER_PAYLOAD_ALIGNMENT) * NINFER_PAYLOAD_ALIGNMENT
+            f.seek(base + entry["offset"])
+            data = f.read(entry["bytes"])
+        return data.decode("utf-8") if len(data) == entry["bytes"] else None
+    except (OSError, ValueError, struct.error):
+        return None
+
+
 def artifact_components(directory: dict | None) -> tuple[str, ...]:
     """`components` is an OBJECT keyed text/vision/mtp/dflash2 (FellPeak, T788 delta)."""
     if not directory:

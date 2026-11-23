@@ -230,3 +230,103 @@ class EffortScale:
         return Resolved(KWARGS if near == NONE else TOP, near,
                         f"{_show(number)} -> {near} ({_show(self.numbers[near])}): "
                         f"{self.refuse_number(number) or ''}".rstrip(": "))
+
+
+# ── discovery: what the SERVER says, through its own template renderer ──────────────────────────
+#
+# POST /apply-template renders the prompt a chat request would produce and returns {"prompt": ...}:
+# no generation, no load of anything not already resident. NInfer parses the body through the same
+# gates as a turn (ninfer src/serve/llamacpp_http.cpp:175-181); llama.cpp serves it too (tools/server/
+# server.cpp:202). Discovery calls NOTHING else on the engine.
+
+PROBE_MESSAGES = ({"role": "user", "content": "probe"},)
+_NO = object()
+
+
+def http_post(host: str, timeout: float = 5.0):
+    """`post(path, body) -> (status, json)` against `host`; an HTTP error is a status, not a raise."""
+    import urllib.error
+    import urllib.request
+
+    def post(path: str, body: dict):
+        req = urllib.request.Request(f"{host.rstrip('/')}{path}", data=json.dumps(body).encode("utf-8"),
+                                     headers={"User-Agent": "LiteTUI", "Content-Type": "application/json"})
+        try:
+            with urllib.request.urlopen(req, timeout=timeout) as r:
+                return r.status, json.load(r)
+        except urllib.error.HTTPError as e:
+            try:
+                return e.code, json.loads(e.read() or b"{}")
+            except ValueError:
+                return e.code, {}
+    return post
+
+
+def _render(post, model, *, effort=None, kwargs_effort=_NO) -> str | None:
+    body: dict = {"model": model, "messages": [dict(m) for m in PROBE_MESSAGES]}
+    if effort is not None:
+        body["reasoning_effort"] = effort
+    if kwargs_effort is not _NO:
+        body["chat_template_kwargs"] = {"reasoning_effort": kwargs_effort}
+    try:
+        status, payload = post("/apply-template", body)
+    except Exception:
+        return None
+    prompt = payload.get("prompt") if isinstance(payload, dict) else None
+    return prompt if status == 200 and isinstance(prompt, str) else None
+
+
+def accepted_from_renders(renders: dict) -> tuple[str, ...]:
+    """The graded names a template really accepts, from one render per name.
+
+    Two names that render the same prompt are one level. On NInfer that is the engine mapping a
+    rejected name onto its nearest accepted one (Qwen3.8: high and max render as xhigh); a template
+    can also alias a name itself (Qwen's `high` -> `xhigh`). Each group holds exactly one accepted name,
+    and the set chosen must reproduce the groups under NInfer's nearest rule; among sets that do, the
+    highest name of each group wins (llama.cpp's own convention, common/jinja/caps.cpp:631-641).
+    """
+    import itertools
+
+    groups: dict[str, list[str]] = {}
+    for name in EFFORT_ORDER:
+        if renders.get(name) is not None:
+            groups.setdefault(renders[name], []).append(name)
+    members = [sorted(g, key=EFFORT_ORDER.index, reverse=True) for g in groups.values()]
+    for choice in itertools.product(*members):
+        if all(nearest_accepted(name, choice) == choice[i] for i, group in enumerate(members) for name in group):
+            return tuple(sorted(choice, key=EFFORT_ORDER.index))
+    return tuple(sorted((g[0] for g in members), key=EFFORT_ORDER.index))
+
+
+def discover_scale(post, *, model: str, template: str | None, fallback_names=(), source: str = "") -> EffortScale:
+    """A model's scale from its template text (may be None) and its server's /apply-template.
+
+    `post(path, body) -> (status, json)` is the only door to the engine. Names: the template map's keys
+    when it has a map, else the probe's render groups, else `fallback_names` (the backend's static
+    list) with template_read False. The number channel is on only when a number sent in
+    chat_template_kwargs renders exactly like the name the map gives that number, and unlike no effort.
+    """
+    numbers = parse_effort_map(template)
+    renders = {name: _render(post, model, effort=name) for name in KNOWN_NAMES}
+    probed = any(prompt is not None for prompt in renders.values())
+    if numbers:
+        names = tuple(n for n in KNOWN_NAMES if n in numbers and (not probed or renders.get(n) is not None))
+        if NONE not in names and renders.get(NONE) is not None:
+            names = (NONE, *names)       # off through the thinking switch, for a map without "none"
+        read = True
+    elif probed:
+        names = ((NONE,) if renders.get(NONE) is not None else ()) + accepted_from_renders(renders)
+        read = True
+    else:
+        names, read = tuple(fallback_names), False
+    number_wire = False
+    if numbers and probed:
+        default = _render(post, model)
+        for name in names:
+            if name in EFFORT_ORDER and renders.get(name) is not None and renders[name] != default:
+                carried = _render(post, model, kwargs_effort=numbers[name])
+                number_wire = carried is not None and carried == renders[name]
+                break
+    where = source or "the served template"
+    return EffortScale(names=names, numbers=numbers if read else {}, number_wire=number_wire,
+                       source=where if read else "template not read", template_read=read)
