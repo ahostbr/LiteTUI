@@ -492,6 +492,8 @@ async def test_pilot_modelcfg_per_model_number_saves_refuses_and_keeps_a_stored_
         body.action_apply()
         for _ in range(4):
             await pilot.pause()
+        assert not b.screen.query(ModelConfigBody), \
+            f"the apply was refused: {body.query_one('#mc-error', Static).render()}"
         assert b.settings.model_infer_overrides["inkling-2-mini"]["reasoning_effort"] == 0.1, \
             "an unchanged stored number must survive an apply on a backend with no scale"
 
