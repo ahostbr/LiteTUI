@@ -535,3 +535,13 @@ def test_interval_edges_are_exact_for_every_family():
             assert p.check_ip(str(first)).blocked and p.check_ip(str(last)).blocked, (fam, i)
             assert cn.find(mk(ends[i] + 1)) != cn.find(last), (fam, i, "the address after a block is not in that block")
             assert starts[i] == 0 or cn.find(mk(starts[i] - 1)) != cn.find(first), (fam, i)
+
+def test_loopback_and_private_are_exempt_even_if_a_data_set_ever_covers_them():
+    poisoned = ep.BlockData([ep._IpSet("poison", "test", "2026-11-23", ["10.0.0.0/8", "127.0.0.0/8", "::1/128", "192.168.0.0/16"])],
+                            frozenset(), "test", "", "")
+    p = ep.EgressPolicy(poisoned)
+    for ok in ("127.0.0.1", "10.9.9.9", "::1", "192.168.5.5"):
+        assert not p.check_ip(ok).blocked, ok
+    # ...while the same data blocks a public address it covers, so the exemption is not a blanket pass
+    public = ep.EgressPolicy(ep.BlockData([ep._IpSet("p", "t", "d", ["93.184.216.0/24"])], frozenset(), "t", "", ""))
+    assert public.check_ip(GOOD_IP).blocked
