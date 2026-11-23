@@ -107,8 +107,13 @@ NOT_A_SETTINGS_CONTROL = frozenset({
 })
 
 
-def thinking_choices(backend, model_id, current):
+def thinking_choices(backend, model_id, current, scale=None):
     """(label, value) rows the Thinking level select offers on `backend`.
+
+    T1398: with the served model's `scale` (effort_scale.EffortScale, read from its own template), the
+    rows are exactly the levels that template accepts, each labelled with the number it sends
+    ("high · 0.9"); a saved manual number is a row "manual · 0.1", and a saved name this model does
+    not take says where it lands ("high -> xhigh (saved; ...)").
 
     Module-level so the sidecar settings view offers exactly these rows too
     (sidecar_settings.public_snapshot); it was SettingsScreen._thinking_choices.
@@ -126,6 +131,18 @@ def thinking_choices(backend, model_id, current):
                    for level in _as_choices(backend.reasoning_levels(model_id))]
         if current not in [value for _, value in choices]:
             choices.append((f"{current} (saved; not supported by this model)", current))
+        return choices
+    if scale is not None and scale.template_read:
+        from litetui.effort_scale import describe, is_number
+
+        choices = [(scale.label(name), "off" if name == "none" else name) for name in scale.names]
+        values = [value for _, value in choices]
+        if is_number(current):
+            chip = describe(current, scale)[0].removeprefix("think:")
+            choices.append((f"manual · {chip}", current))
+        elif current and current not in values:
+            chip = describe(current, scale)[0].removeprefix("think:")
+            choices.append((f"{chip} (saved; this model's template has no {current!r})", current))
         return choices
     # A saved level this list does not carry (a NInfer/llama seat running at "max", as DS-pelican-4 did on 2026-11-08) must still
     # be an option: Textual's Select raises InvalidSelectValueError for a value outside its options, and /settings died on mount.
@@ -675,8 +692,10 @@ class SettingsBody(Widget):
     def _thinking_choices(self, name="thinking_level"):
         # getattr: the method used to read model_id only on codex/claude, and
         # test hosts (and any plugin App) without one must still compose.
+        from litetui.effort_scale import app_scale
+
         return thinking_choices(getattr(self.app, "backend", None), getattr(self.app, "model_id", None),
-                                getattr(self._start, name))
+                                getattr(self._start, name), app_scale(self.app))
 
     def _select_row(self, name: str, label: str, choices, help_text: str):
         locked = settings_mod.source_of(name)

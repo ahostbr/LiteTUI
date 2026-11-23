@@ -70,9 +70,12 @@ def _qwen_prompt(effort, thinking):
 class FakeEngine:
     """mode: "ninfer", "ninfer+B" or "llama". template: "inkling" or "qwen"."""
 
-    def __init__(self, tmp_path, mode, template, *, apply_template=True, router_loaded=None):
+    def __init__(self, tmp_path, mode, template, *, apply_template=True, router_loaded=None,
+                 serve_chat=False, model_id="m"):
         self.mode, self.template, self.apply_template = mode, template, apply_template
         self.router_loaded = router_loaded          # None: single-model; True/False: a router row
+        #: Only the wire-capture tests answer chat; discovery tests leave it off and assert it was never asked.
+        self.serve_chat, self.model_id = serve_chat, model_id
         self.requests: list[tuple[str, str, dict | None]] = []
         text = (FIXTURES / ("inkling2.jinja" if template == "inkling" else "qwen38_strata.jinja")).read_text("utf-8")
         self.template_text = text
@@ -104,11 +107,37 @@ class FakeEngine:
                     rows = [{"id": "m"}] if engine.router_loaded is None else [
                         {"id": "m", "status": {"value": "loaded" if engine.router_loaded else "unloaded"}}]
                     return self._send(200, {"data": rows})
+                if engine.serve_chat and self.path == "/health":
+                    return self._send(200, {"status": "ok"})
+                if engine.serve_chat and self.path == "/v1/models":
+                    return self._send(200, {"data": [{"id": engine.model_id, "max_model_len": 32768}]})
                 self._send(404, {"error": "not here"})
+
+            def _stream_reply(self):
+                chunks = [
+                    {"id": "c", "object": "chat.completion.chunk", "model": engine.model_id,
+                     "choices": [{"index": 0, "delta": {"role": "assistant", "content": "ok"}, "finish_reason": None}]},
+                    {"id": "c", "object": "chat.completion.chunk", "model": engine.model_id,
+                     "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}]},
+                    {"id": "c", "object": "chat.completion.chunk", "model": engine.model_id, "choices": [],
+                     "usage": {"prompt_tokens": 10, "completion_tokens": 1, "total_tokens": 11}},
+                ]
+                raw = "".join(f"data: {json.dumps(c)}\n\n" for c in chunks) + "data: [DONE]\n\n"
+                self.send_response(200)
+                self.send_header("Content-Type", "text/event-stream")
+                self.send_header("Content-Length", str(len(raw.encode())))
+                self.end_headers()
+                self.wfile.write(raw.encode())
 
             def do_POST(self):
                 body = json.loads(self.rfile.read(int(self.headers.get("Content-Length") or 0)) or b"{}")
                 engine.requests.append(("POST", self.path, body))
+                if engine.serve_chat and self.path == "/v1/chat/completions":
+                    try:
+                        engine.render(body)        # the gates a real engine applies before generating
+                    except _Refused as refused:
+                        return self._send(refused.status, {"error": {"message": str(refused)}})
+                    return self._stream_reply()
                 if self.path != "/apply-template" or not engine.apply_template:
                     return self._send(404, {"error": "not here"})
                 try:

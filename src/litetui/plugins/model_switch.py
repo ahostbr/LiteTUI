@@ -103,6 +103,8 @@ def switch_model(app, target: str) -> bool:
     app.apply_context_length()
     if app.backend.name == "lmstudio":
         app._probe_thinking()
+    if callable(getattr(app.backend, "effort_scale", None)) and hasattr(app, "_discover_effort_scale"):
+        app._discover_effort_scale()       # T1398: the new model's own scale
     app._rpc_emit_model_state()
     return True
 
@@ -832,6 +834,8 @@ def _start_load(app, target: str, ctx=_USE_DEFAULT) -> None:
         app.fetch_context_window()
         if getattr(app.backend, "name", "") == "lmstudio":
             app._probe_thinking()
+        if callable(getattr(app.backend, "effort_scale", None)) and hasattr(app, "_discover_effort_scale"):
+            app._discover_effort_scale()   # T1398: the new model's own scale
         app._rpc_emit_model_state()
 
     app.run_worker(_go(), group="modelctl", exclusive=True)
@@ -1334,13 +1338,25 @@ class ModelConfigBody(Widget):
                             if key == "reasoning_effort":
                                 # Inherits the GLOBAL thinking level and applies to
                                 # chat AND compaction — not a server default.
-                                inherited = app.thinking_level or None
+                                inherited = app.thinking_level
                                 blank_label = (
                                     f"inherit global ({app.thinking_level})"
-                                    if app.thinking_level else "inherit global (unset)"
+                                    if app.thinking_level is not None else "inherit global (unset)"
                                 )
                                 note = ("applies to chat + compaction; off sends none "
                                        "(no reasoning trace)")
+                                # T1398: for the served model, its template's own levels and numbers.
+                                from litetui.effort_scale import app_scale, as_level, describe, is_number
+                                scale = app_scale(app) if self._key == app.model_id else None
+                                if scale is not None and scale.template_read:
+                                    saved = infer_cfg.get(key)
+                                    choices = [(scale.label(n), "off" if n == "none" else n) for n in scale.names]
+                                    if saved not in (None, "") and saved not in [v for _, v in choices]:
+                                        chip = describe(saved, scale)[0].removeprefix("think:")
+                                        choices.append(((f"manual · {chip}" if is_number(as_level(saved))
+                                                         else f"{chip} (saved)"), saved))
+                                    note = (f"levels from {scale.source}; a number from /think "
+                                            "applies globally, or is kept here when saved")
                             yield from self._field_rows(
                                 "inf", key, label, kind,
                                 choices if choices is not None else
@@ -1410,8 +1426,9 @@ class ModelConfigBody(Widget):
                 yield Select(literal_options(choices), value=current or "", id=wid,
                              allow_blank=False, disabled=disabled)
             elif kind == "select":
-                choices = [(blank_label, "")] + [(c, c) for c in extra]
-                value = current if current in (extra or []) else ""
+                # An entry is a value, or (label, value) where the label carries more (T1398: "high · 0.9").
+                choices = [(blank_label, "")] + [c if isinstance(c, tuple) else (c, c) for c in (extra or [])]
+                value = current if current in [v for _, v in choices[1:]] else ""
                 yield Select(literal_options(choices), value=value, id=wid,
                              allow_blank=False, disabled=disabled)
             else:
@@ -1468,7 +1485,8 @@ class ModelConfigBody(Widget):
             except Exception:
                 continue   # disabled-by-census fields may be absent; keep base value
             if isinstance(widget, Select):
-                raw = widget.value or ""
+                # `is None`, not `or`: a manual thinking number 0 is a value (T1398).
+                raw = "" if widget.value is None else widget.value
                 if raw == "":
                     out.pop(key, None)
                 elif kind == "tri":

@@ -114,6 +114,38 @@ def request_thinks(extra: dict, effort=_UNPINNED) -> bool:
     return kwargs.get("enable_thinking") is not False
 
 
+def chat_effort(extra: dict) -> tuple[object, str | None]:
+    """(value, placement) of the effort a chat request carries: top-level, in the template kwargs
+    (T1398: a manual number, or "none" for a template that maps it), or (None, None)."""
+    if extra.get("reasoning_effort") is not None:
+        return extra["reasoning_effort"], "top"
+    kwargs = extra.get("chat_template_kwargs") or {}
+    if kwargs.get("reasoning_effort") is not None:
+        return kwargs["reasoning_effort"], "kwargs"
+    return None, None
+
+
+def pin_effort(extra: dict, value, placement: str | None) -> dict:
+    """`extra` with its effort replaced by the chat turn's, IN THE SAME PLACE. The template prints the
+    effort in the first lines of the prompt, so a compaction must render it byte-identically or the
+    engine's prefix cache is thrown away (the measured cost: memory prefix-cache-audit-side-calls).
+    A value with no placement (an older caller) goes top-level, as it always did."""
+    out = dict(extra)
+    out.pop("reasoning_effort", None)
+    kwargs = dict(out.get("chat_template_kwargs") or {})
+    kwargs.pop("reasoning_effort", None)
+    if kwargs:
+        out["chat_template_kwargs"] = kwargs
+    else:
+        out.pop("chat_template_kwargs", None)
+    if value is not None:
+        if placement == "kwargs":
+            out["chat_template_kwargs"] = {**kwargs, "reasoning_effort": value}
+        else:
+            out["reasoning_effort"] = value
+    return out
+
+
 #: Backend -> the request key that caps thinking, and the setting that holds N (T1312 NInfer, T1318 Strata).
 #: Xolotl serves through Strata's `serve/server.py`, so it takes Strata's key and Strata's one setting.
 THINKING_BUDGET_KEY = {"ninfer": "thinking_budget", "strata": "reasoning_budget_tokens",
@@ -225,9 +257,11 @@ def _resolve_reasoning_effort(
     """
     if level is None or level == "":
         return None
-    if not isinstance(level, str):
-        # A manual number (T1398) reaches the wire only through a model's EffortScale; a backend
-        # with no scale has no way to carry one, so nothing is sent.
+    from litetui.effort_scale import as_level
+
+    if not isinstance(as_level(level), str):
+        # A manual number (T1398), or its text from the owned authority, reaches the wire only
+        # through a model's EffortScale; a backend with no scale cannot carry one: nothing is sent.
         return None
     if level == "off":
         return "none"

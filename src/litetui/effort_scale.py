@@ -48,6 +48,20 @@ def is_number(value) -> bool:
             and math.isfinite(value) and value >= 0)
 
 
+def as_level(value):
+    """A stored level as the resolver reads it: numeric TEXT is the number. A manual number travels as
+    its text through the string-typed layers (the owned agent authority, the conversation's settings
+    file, --thinking-level); no level name is numeric, so the reading is unambiguous."""
+    if isinstance(value, str):
+        text = value.strip()
+        try:
+            number = int(text) if text.isdigit() else float(text)
+        except ValueError:
+            return value
+        return number if is_number(number) else value
+    return value
+
+
 def nearest_accepted(requested: str, accepted) -> str:
     """NInfer's rule, exactly (chat_template.cpp:91-103): accepted -> itself; else the nearest accepted
     effort by position in EFFORT_ORDER, checking UP before down at each distance; a name outside the
@@ -193,6 +207,7 @@ class EffortScale:
 
     def resolve(self, level) -> Resolved:
         """A chosen level (a UI name, "off", or a number) -> what this turn sends."""
+        level = as_level(level)
         if level is None or level == "":
             return Resolved(None, None)
         if is_number(level):
@@ -230,6 +245,68 @@ class EffortScale:
         return Resolved(KWARGS if near == NONE else TOP, near,
                         f"{_show(number)} -> {near} ({_show(self.numbers[near])}): "
                         f"{self.refuse_number(number) or ''}".rstrip(": "))
+
+
+def app_scale(app) -> EffortScale | None:
+    """The app's cached scale for its current model, or None (never blocks, never raises)."""
+    cached = getattr(app, "_cached_effort_scale", None)
+    try:
+        return cached() if callable(cached) else None
+    except Exception:
+        return None
+
+
+def backend_label(app) -> str:
+    backend = getattr(app, "backend", None)
+    return getattr(backend, "label", None) or getattr(backend, "name", "") or "this backend"
+
+
+def think_chip(app) -> str:
+    """The header/footer chip: the chosen level and what is actually sent for it."""
+    return describe(getattr(app, "thinking_level", None), app_scale(app), backend_label(app))[0]
+
+
+def effort_body(scale: EffortScale, level) -> dict:
+    """The extra_body fields `level` puts on the wire for this scale (a side call's whole effort)."""
+    body: dict = {}
+    scale.resolve(level).apply(body)
+    return body
+
+
+def describe(level, scale: EffortScale | None, backend_label: str = "this backend") -> tuple[str, str]:
+    """(header chip, the /think sentence) for `level` on this model: what is ACTUALLY sent.
+
+    Prefix (fcb8e996): a number that cannot be sent "must show in the header and the /think line ...
+    not only in a note nobody sees", on a model with no numbers and on a backend with no scale alike.
+    """
+    level = as_level(level)
+    if level is None or level == "":
+        return "think:default", "Thinking level unset: the field is not sent and the server default applies."
+    shown = _show(level) if is_number(level) else str(level)
+    if scale is None:
+        if is_number(level):
+            return (f"think:{shown} (not sent)",
+                    f"{shown} not sent: {backend_label} takes level names only, so the server default applies.")
+        return f"think:{shown}", ""
+    resolved = scale.resolve(level)
+    if resolved.placement is None:
+        return f"think:{shown} (not sent)", resolved.note + ", so the template default applies."
+    if is_number(level):
+        if resolved.placement == KWARGS and resolved.value == level:
+            return f"think:{shown}", f"Thinking level: {shown} (sent as a number to the template)."
+        return (f"think:{shown} (as {resolved.value})", resolved.note + ".")
+    sent = "off" if resolved.value == NONE else resolved.value
+    number = scale.number_for(resolved.value)
+    tail = f" · {_show(number)}" if number is not None else ""
+    if resolved.note == "template not read":
+        return f"think:{shown} (template not read)", (
+            f"Thinking level: {shown} (sends reasoning_effort={resolved.value!r}; this model's template was "
+            f"not read, so its numbers are unknown and the engine maps the name).")
+    if resolved.note:
+        return f"think:{shown} -> {sent}{tail}", resolved.note + "."
+    where = "chat_template_kwargs.reasoning_effort" if resolved.placement == KWARGS else "reasoning_effort"
+    meaning = f" -> template level {_show(number)}" if number is not None else ""
+    return f"think:{shown}{tail}", f"Thinking level: {shown} (sends {where}={resolved.value!r}{meaning})."
 
 
 # ── discovery: what the SERVER says, through its own template renderer ──────────────────────────

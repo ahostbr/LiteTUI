@@ -1,0 +1,267 @@
+"""T1398: /think, the header and the settings control show the number each level sends.
+
+Brief step 5: "/think and the settings control must show the number a preset sends. Take a screenshot
+or SVG of each ... A green suite is not a look." The pilot arms save SVGs when LITETUI_T1398_SHOTS
+names a folder; the assertions hold either way.
+"""
+from __future__ import annotations
+
+import os
+from pathlib import Path
+
+import pytest
+from _owned_seat import owned_app
+
+from litetui.effort_scale import EffortScale, parse_effort_map
+from litetui.picker import PickerScreen
+from litetui.plugins import misc
+from litetui.settings import Settings
+
+FIXTURES = Path(__file__).parent / "fixtures" / "effort_templates"
+INKLING = (FIXTURES / "inkling2.jinja").read_text(encoding="utf-8")
+NAMES = ("none", "minimal", "low", "medium", "high", "xhigh", "max")
+
+
+def _inkling(number_wire=False):
+    return EffortScale(names=NAMES, numbers=parse_effort_map(INKLING), number_wire=number_wire,
+                       source="template in Inkling-2-Mini.ninfer", template_read=True)
+
+
+QWEN = EffortScale(names=("none", "low", "medium", "xhigh"), source="the served template", template_read=True)
+
+
+class _Backend:
+    """An engine that reads its template (the NInfer/llama.cpp shape). No network."""
+
+    def __init__(self, scale, name="ninfer", label="NInfer"):
+        self.name, self.label, self._scale = name, label, scale
+        self.calls = 0
+
+    def host(self):
+        return "http://127.0.0.1:0"
+
+    def effort_scale(self, model):
+        self.calls += 1
+        return self._scale
+
+    def reasoning_levels(self, model=None):
+        return ["none", "low", "medium", "xhigh"]
+
+
+class _App:
+    """Only what /think touches; the pilot arms below use a real LiteTUI."""
+
+    def __init__(self, backend, scale=None, level="high"):
+        self.backend, self.model_id, self.thinking_level = backend, "inkling", level
+        self.settings = Settings()
+        self._rpc = False
+        self._effort_scales = {}
+        self.messages: list[str] = []
+        self.discovered = 0
+        if scale is not None:
+            self._effort_scales[self._key()] = scale
+
+    def _key(self):
+        return (self.backend.name, self.backend.host() if hasattr(self.backend, "host") else "", self.model_id)
+
+    def _cached_effort_scale(self):
+        return self._effort_scales.get(self._key())
+
+    def _discover_effort_scale(self):
+        self.discovered += 1
+
+    def system_message(self, text):
+        self.messages.append(text)
+
+    def update_header(self):
+        pass
+
+
+# ── /think, decisions ───────────────────────────────────────────────────────────────────────────
+
+
+def test_the_picker_offers_the_templates_levels_each_with_its_number():
+    app = _App(_Backend(_inkling()), _inkling())
+    labels = dict(misc._thinking_rows(app))
+    assert labels["low"] == "low · 0.2"
+    assert labels["high"] == "high · 0.9"
+    assert labels["xhigh"] == "xhigh · 0.99"
+    assert labels["off"] == "off · 0"
+    assert "unset" in labels
+
+
+def test_think_high_says_it_sends_high_and_the_template_reads_0_9():
+    app = _App(_Backend(_inkling()), _inkling())
+    misc._cmd_think(app, "think", "high")
+    assert app.thinking_level == "high"
+    assert app.messages[-1] == "Thinking level: high (sends reasoning_effort='high' -> template level 0.9)."
+
+
+def test_think_0_1_on_ninfer_today_is_set_and_says_it_goes_as_minimal():
+    app = _App(_Backend(_inkling()), _inkling())
+    misc._cmd_think(app, "think", "0.1")
+    assert app.thinking_level == 0.1
+    assert app.messages[-1] == "0.1 is sent as 'minimal' (this model's template maps 'minimal' to 0.1)."
+
+
+def test_think_0_1_where_numbers_travel_is_sent_as_a_number():
+    app = _App(_Backend(_inkling(True), name="llamacpp", label="llama.cpp"), _inkling(True))
+    misc._cmd_think(app, "think", "0.1")
+    assert app.thinking_level == 0.1
+    assert app.messages[-1] == "Thinking level: 0.1 (sent as a number to the template)."
+    rows = dict(misc._thinking_rows(app))
+    assert rows[0.1] == "manual · 0.1"
+
+
+def test_think_0_5_on_ninfer_today_is_refused_with_the_numbers_that_work_and_nothing_stored():
+    app = _App(_Backend(_inkling()), _inkling())
+    misc._cmd_think(app, "think", "0.5")
+    assert app.thinking_level == "high"
+    assert app.messages[-1] == ("0.5 not set: This server cannot send a number to the template yet. "
+                                "Numbers that work here: 0, 0.1, 0.2, 0.7, 0.9, 0.99.")
+
+
+def test_think_a_number_on_qwen_is_refused_because_its_template_has_none():
+    app = _App(_Backend(QWEN), QWEN)
+    misc._cmd_think(app, "think", "0.1")
+    assert app.thinking_level == "high"
+    assert "no effort numbers" in app.messages[-1]
+
+
+def test_think_a_number_on_a_backend_with_no_template_is_refused_by_name():
+    class Strata:
+        name, label = "strata", "Strata"
+
+        def reasoning_levels(self, model=None):
+            return ["none", "low", "medium", "high"]
+    app = _App(Strata())
+    misc._cmd_think(app, "think", "0.1")
+    assert app.thinking_level == "high"
+    assert app.messages[-1].startswith("0.1 not set: Strata takes level names only")
+
+
+def test_think_a_number_before_the_scale_is_read_asks_to_retry_and_starts_the_read():
+    app = _App(_Backend(_inkling()))
+    misc._cmd_think(app, "think", "0.1")
+    assert app.thinking_level == "high" and app.discovered == 1
+    assert "has not been read yet" in app.messages[-1]
+
+
+def test_a_saved_name_the_model_lacks_says_where_it_lands():
+    app = _App(_Backend(QWEN), QWEN)
+    misc._cmd_think(app, "think", "xhigh")
+    assert app.messages[-1] == "Thinking level: xhigh (sends reasoning_effort='xhigh')."
+    app.thinking_level = "high"            # saved under another model
+    from litetui.effort_scale import think_chip
+    assert think_chip(app) == "think:high -> xhigh"
+
+
+def test_set_thinking_takes_a_number_by_the_same_rule_as_think():
+    from litetui.thinking_capabilities import set_thinking, thinking_capabilities
+
+    app = _App(_Backend(_inkling()), _inkling())
+    app._remember_for_this_convo = lambda *a: None
+    set_thinking(app, 0.2)
+    assert app.thinking_level == 0.2
+    with pytest.raises(ValueError, match="cannot send a number"):
+        set_thinking(app, 0.5)
+    caps = thinking_capabilities(app)
+    assert caps["levels"] == ["default", "off", "minimal", "low", "medium", "high", "xhigh", "max"]
+    assert caps["numbers"]["high"] == 0.9 and caps["number_wire"] is False
+
+
+# ── the settings control ────────────────────────────────────────────────────────────────────────
+
+
+def test_the_settings_select_rows_carry_the_numbers_and_a_manual_row():
+    from litetui.settings_screen import thinking_choices
+
+    rows = thinking_choices(_Backend(_inkling()), "inkling", "high", _inkling())
+    assert ("high · 0.9", "high") in rows and ("off · 0", "off") in rows
+    rows = thinking_choices(_Backend(_inkling()), "inkling", 0.1, _inkling())
+    assert rows[-1] == ("manual · 0.1 (as minimal)", 0.1)
+    rows = thinking_choices(_Backend(QWEN), "qwen", "high", QWEN)
+    assert rows[-1] == ("high -> xhigh (saved; this model's template has no 'high')", "high")
+
+
+# ── pilot: the real app, and the pictures ───────────────────────────────────────────────────────
+
+
+def _shots() -> Path | None:
+    where = os.environ.get("LITETUI_T1398_SHOTS")
+    if not where:
+        return None
+    path = Path(where)
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+def _real_app(scale, level="high"):
+    a = owned_app()
+    a._connect = lambda: None
+    a.convo_dir = None
+    a.skills = []
+    a.backend = _Backend(scale)
+    a.model_id = "inkling-2-mini"
+    a.thinking_level = level
+    a._effort_scales = {a._effort_scale_key(): scale}
+    return a
+
+
+@pytest.mark.asyncio
+async def test_pilot_think_picker_shows_the_numbers():
+    a = _real_app(_inkling())
+    async with a.run_test(size=(120, 40)) as pilot:
+        a.update_header()            # connect is stubbed; this is what it would have drawn
+        misc._cmd_think(a, "think", "")
+        await pilot.pause()
+        assert isinstance(a.screen, PickerScreen)
+        if shots := _shots():
+            a.save_screenshot(filename="think_picker_inkling_ninfer.svg", path=str(shots))
+        assert a.sub_title.split(" · ")[0] == "NInfer"
+        assert "think:high · 0.9" in a.sub_title
+
+
+@pytest.mark.asyncio
+async def test_pilot_think_number_and_header():
+    a = _real_app(_inkling())
+    async with a.run_test(size=(120, 40)) as pilot:
+        misc._cmd_think(a, "think", "0.1")
+        await pilot.pause()
+        assert a.thinking_level == 0.1
+        assert "think:0.1 (as minimal)" in a.sub_title
+        misc._cmd_think(a, "think", "0.5")
+        await pilot.pause()
+        await pilot.pause()
+        assert a.thinking_level == 0.1, "a refused number is not stored"
+        screen = a.export_screenshot()
+        assert "0.1&#160;is&#160;sent&#160;as" in screen or "0.1 is sent as" in screen
+        assert "not&#160;set" in screen or "0.5 not set" in screen, "the refusal must be on screen"
+        if shots := _shots():
+            a.save_screenshot(filename="think_numbers_inkling_ninfer.svg", path=str(shots))
+
+
+@pytest.mark.asyncio
+async def test_pilot_settings_thinking_select_shows_the_numbers():
+    from textual.widgets import Input, Select
+
+    from litetui.settings_screen import SettingsBody, SettingsScreen
+
+    a = _real_app(_inkling(True))
+    a.settings.thinking_level = "high"
+    async with a.run_test(size=(130, 46)) as pilot:
+        a.push_screen(SettingsScreen(a.settings))
+        await pilot.pause()
+        body = a.screen.query_one(SettingsBody)
+        search = body.query_one("#set-search", Input)
+        search.value = "Thinking level"
+        await pilot.pause()
+        await pilot.pause()
+        select = body.query_one("#f-thinking_level", Select)
+        labels = [str(prompt) for prompt, _value in select._options]
+        assert "high · 0.9" in labels and "low · 0.2" in labels and "off · 0" in labels
+        select.focus()
+        await pilot.press("enter")
+        await pilot.pause()
+        if shots := _shots():
+            a.save_screenshot(filename="settings_thinking_select_inkling.svg", path=str(shots))

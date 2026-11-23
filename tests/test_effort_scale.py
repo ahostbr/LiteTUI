@@ -223,3 +223,72 @@ def test_a_per_model_override_number_beats_the_global_level():
                                   max_tokens_chat=1, request_overrides={"reasoning_effort": 0.1},
                                   thinking_level="high", backend_name="llamacpp", effort_scale=INKLING_LLAMA)
     assert req["extra_body"]["chat_template_kwargs"] == {"reasoning_effort": 0.1}
+
+
+# ── Prefix fcb8e996 (1): the compaction re-pin renders the chat turn's effort byte for byte ──────
+
+
+def _effort_fields(extra):
+    return {"top": extra.get("reasoning_effort"),
+            "kwargs": (extra.get("chat_template_kwargs") or {}).get("reasoning_effort")}
+
+
+@pytest.mark.parametrize("scale,level,backend", [
+    (INKLING_NINFER, "high", "ninfer"),       # a name, top-level
+    (INKLING_LLAMA, 0.1, "llamacpp"),         # a number, in the template kwargs
+    (INKLING_NINFER, "off", "ninfer"),        # Inkling's off, "none" in the template kwargs
+    (QWEN_SCALE, "off", "ninfer"),            # Qwen's off, top-level "none"
+])
+def test_the_pinned_compaction_carries_the_chat_turns_effort_in_the_same_place(scale, level, backend):
+    """app.py stores (value, placement) from the chat request and re-pins the cache-friendly
+    compaction with pin_effort. The compaction's own level (compact_thinking_level "low") must not
+    survive, and the effort must sit where the chat turn put it: a top-level "none" and a kwargs
+    "none" render different prompts on llama.cpp."""
+    from litetui.turn_engine import chat_effort, pin_effort
+
+    chat = _wire(scale, level, backend)
+    value, placement = chat_effort(chat)
+    compact = TurnEngine.compact_request(model_id="m", messages=[], max_tokens=10, thinking_level="low",
+                                         tools_enabled=False, backend_name=backend, effort_scale=scale,
+                                         pinned_effort=value)
+    pinned = pin_effort(compact.get("extra_body") or {}, value, placement)
+    assert _effort_fields(pinned) == _effort_fields(chat)
+
+
+def test_pin_effort_with_no_chat_effort_removes_the_compactions_own():
+    from litetui.turn_engine import pin_effort
+
+    assert pin_effort({"reasoning_effort": "low", "return_progress": True}, None, None) == {"return_progress": True}
+    assert pin_effort({"chat_template_kwargs": {"reasoning_effort": 0.1}}, None, None) == {}
+    assert pin_effort({}, "xhigh", None) == {"reasoning_effort": "xhigh"}, "an older caller's bare value"
+
+
+# ── Prefix fcb8e996 (2): a number that cannot be sent says so where the user looks ───────────────
+
+
+def test_a_global_number_on_a_model_with_no_numbers_says_not_sent_in_the_header_and_the_line():
+    from litetui.effort_scale import describe
+
+    chip, line = describe(0.1, QWEN_SCALE, "NInfer")
+    assert chip == "think:0.1 (not sent)"
+    assert line == "0.1 not sent: this model's template has no effort numbers, so the template default applies."
+
+
+def test_a_number_on_a_backend_with_no_scale_says_not_sent():
+    from litetui.effort_scale import describe
+
+    chip, line = describe(0.1, None, "Strata")
+    assert chip == "think:0.1 (not sent)"
+    assert line.startswith("0.1 not sent: Strata takes level names only")
+    assert describe("high", None, "Strata") == ("think:high", "")
+
+
+def test_the_header_names_the_number_and_any_substitution():
+    from litetui.effort_scale import describe
+
+    assert describe("high", INKLING_NINFER)[0] == "think:high · 0.9"
+    assert describe(0.1, INKLING_NINFER)[0] == "think:0.1 (as minimal)"
+    assert describe(0.1, INKLING_LLAMA)[0] == "think:0.1"
+    assert describe("high", QWEN_SCALE)[0] == "think:high -> xhigh"
+    assert describe("off", INKLING_NINFER)[0] == "think:off · 0"
+    assert describe(None, INKLING_NINFER)[0] == "think:default"
