@@ -107,8 +107,17 @@ NOT_A_SETTINGS_CONTROL = frozenset({
 })
 
 
-def thinking_choices(backend, model_id, current):
+#: The Thinking level Select row that reveals the manual number box (T1398).
+MANUAL_THINKING = "manual"
+
+
+def thinking_choices(backend, model_id, current, scale=None):
     """(label, value) rows the Thinking level select offers on `backend`.
+
+    T1398: with the served model's `scale` (effort_scale.EffortScale, read from its own template), the
+    rows are exactly the levels that template accepts, each labelled with the number it sends
+    ("high · 0.9"); a saved manual number is a row "manual · 0.1", and a saved name this model does
+    not take says where it lands ("high -> xhigh (saved; ...)").
 
     Module-level so the sidecar settings view offers exactly these rows too
     (sidecar_settings.public_snapshot); it was SettingsScreen._thinking_choices.
@@ -127,11 +136,85 @@ def thinking_choices(backend, model_id, current):
         if current not in [value for _, value in choices]:
             choices.append((f"{current} (saved; not supported by this model)", current))
         return choices
+    if scale is not None and scale.template_read:
+        from litetui.effort_scale import describe, is_number
+
+        choices = [(scale.label(name), "off" if name == "none" else name) for name in scale.names]
+        values = [value for _, value in choices]
+        if is_number(current):
+            chip = describe(current, scale)[0].removeprefix("think:")
+            choices.append((f"manual · {chip}", current))
+        elif current and current not in values:
+            chip = describe(current, scale)[0].removeprefix("think:")
+            choices.append((f"{chip} (saved; this model's template has no {current!r})", current))
+        return choices
     # A saved level this list does not carry (a NInfer/llama seat running at "max", as DS-pelican-4 did on 2026-11-08) must still
     # be an option: Textual's Select raises InvalidSelectValueError for a value outside its options, and /settings died on mount.
+    from litetui.effort_scale import describe, is_number
+
+    if is_number(current):
+        # T1398: a stored number on a backend with no scale; the chip says it is not sent here.
+        return [*THINKING_CHOICES, (f"manual · {describe(current, None)[0].removeprefix('think:')}", current)]
     if current and current not in [value for _, value in THINKING_CHOICES]:
         return [*THINKING_CHOICES, (f"{current} (saved; not in this list)", current)]
     return THINKING_CHOICES
+
+# ── T1398: the manual reasoning number, ONE implementation for every place a level is chosen ──────
+#
+# Ryan: "allow both manual number and presets". A level Select keeps the presets (each with its
+# number) and gains a "manual number…" row; choosing it, or a stored number's "manual · 0.1" row,
+# shows a box for the number. A NEW number is checked with effort_scale.number_refusal, the rule
+# /think <n> uses; an unchanged stored number is kept as it is, so a number saved for another model
+# never blocks a save (a refusal is a ValueError naming the field, like every other field's).
+# Used by Settings (Thinking level, Compact thinking level) and /modelcfg (the per-model override).
+
+
+def with_manual_row(choices, stored):
+    """`choices` plus the "manual number…" row, unless the stored value is already a number."""
+    from litetui.effort_scale import as_level, is_number
+
+    choices = list(choices)
+    if not is_number(as_level(stored)):
+        choices.append(("manual number…", MANUAL_THINKING))
+    return choices
+
+
+def wants_number_box(value) -> bool:
+    """Does this Select value mean "the number in the box"? (the manual row, or a stored number)"""
+    from litetui.effort_scale import as_level, is_number
+
+    return value == MANUAL_THINKING or is_number(as_level(value))
+
+
+def thinking_number_box(box_id: str, stored, scale, disabled: bool = False):
+    """The box a manual number is typed in: holds the stored number, shown only while it is one."""
+    from litetui.effort_scale import as_level, is_number, number_hint
+
+    stored = as_level(stored)
+    box = HostedInput(value=format(stored, "g") if is_number(stored) else "",
+                      placeholder=f"a number — {number_hint(scale)}",
+                      id=box_id, classes="set-input", disabled=disabled)
+    box.display = is_number(stored)
+    return box
+
+
+def manual_number(field: str, text: str, stored, scale, backend_label: str):
+    """The number typed for `field`: refused by the /think rule unless it is the stored one, unchanged."""
+    from litetui.effort_scale import as_level, is_number, number_refusal, parse_number
+
+    text = (text or "").strip()
+    number = parse_number(text)
+    if number is None:
+        raise ValueError(f"{field}: {text or '(blank)'} is not a reasoning number; type one like 0.1, "
+                         "or pick a level")
+    stored = as_level(stored)
+    if is_number(stored) and float(stored) == float(number):
+        return stored
+    why = number_refusal(number, scale, backend_label)
+    if why:
+        raise ValueError(f"{field}: {format(number, 'g')} not set: {why}")
+    return number
+
 
 def _theme_choices(custom: dict | None = None):
     """Built-ins (lights stripped) + the LiteSuite ports + the shades + any
@@ -675,14 +758,18 @@ class SettingsBody(Widget):
     def _thinking_choices(self, name="thinking_level"):
         # getattr: the method used to read model_id only on codex/claude, and
         # test hosts (and any plugin App) without one must still compose.
-        return thinking_choices(getattr(self.app, "backend", None), getattr(self.app, "model_id", None),
-                                getattr(self._start, name))
+        from litetui.effort_scale import app_scale
 
-    def _select_row(self, name: str, label: str, choices, help_text: str):
+        return thinking_choices(getattr(self.app, "backend", None), getattr(self.app, "model_id", None),
+                                getattr(self._start, name), app_scale(self.app))
+
+    def _select_row(self, name: str, label: str, choices, help_text: str, extra=None):
+        """`extra(disabled)` (optional) yields more controls inside the same row, under the Select."""
         locked = settings_mod.source_of(name)
         capability = self._backend_control(name)
         if capability:
             help_text = capability.help
+        disabled = locked is not None or bool(capability and not capability.editable)
         with Vertical(classes="set-row"):
             yield Label(label, classes="set-label")
             yield Select(
@@ -690,10 +777,45 @@ class SettingsBody(Widget):
                 value=getattr(self._start, name),
                 id=f"f-{name}",
                 allow_blank=False,
-                disabled=locked is not None or bool(capability and not capability.editable),
+                disabled=disabled,
             )
+            if extra is not None:
+                yield from extra(disabled)
             note = f"LOCKED by ${locked}.  {help_text}" if locked else help_text
             yield Static(note, classes="set-help")
+
+    # ── T1398: the manual reasoning number (Prefix 5c1db80f 1b) ─────────────────────────────────
+    # The module-level helpers above (with_manual_row, thinking_number_box, wants_number_box,
+    # manual_number) are shared with /modelcfg's per-model override (plugins/model_switch.py).
+
+    def _thinking_choices_with_manual(self, name: str):
+        return with_manual_row(self._thinking_choices(name), getattr(self._start, name))
+
+    def _thinking_number_box(self, name: str):
+        from litetui.effort_scale import app_scale
+
+        def build(disabled: bool):
+            yield thinking_number_box(f"f-{name}-number", getattr(self._start, name), app_scale(self.app),
+                                      disabled)
+        return build
+
+    @on(Select.Changed)
+    def _thinking_select_changed(self, event: Select.Changed) -> None:
+        name = (event.select.id or "").removeprefix("f-")
+        if name not in settings_mod.THINKING_FIELDS:
+            return
+        found = self.query(f"#f-{name}-number")
+        if found:
+            found.first().display = wants_number_box(event.value)
+
+    def _thinking_value(self, name: str, chosen):
+        """The value a Thinking level Select saves: a preset as chosen, or the number in its box."""
+        from litetui.effort_scale import app_scale, backend_label
+
+        if not wants_number_box(chosen):
+            return chosen
+        return manual_number(name, self.query_one(f"#f-{name}-number", Input).value,
+                             getattr(self._start, name), app_scale(self.app), backend_label(self.app))
 
     def _optional_choice_row(self, name: str, label: str, values, blank_label: str, help_text: str):
         """A Select for an optional string: its first row is "" and means UNSET (`_collect` saves None)."""
@@ -1322,10 +1444,11 @@ class SettingsBody(Widget):
 
                         yield self._section_header("generation-reasoning")
                         yield from self._select_row(
-                            "thinking_level", "Thinking level", self._thinking_choices(),
+                            "thinking_level", "Thinking level", self._thinking_choices_with_manual("thinking_level"),
                             "A level THIS SERVER accepts is not always one the LOADED model "
                             "accepts — a virtual model drops an unsupported value with a 200 "
                             "and reasons at its own default instead.",
+                            extra=self._thinking_number_box("thinking_level"),
                         )
                         yield self._section_header("generation-budget")
                         yield from self._text_row(
@@ -1572,9 +1695,11 @@ class SettingsBody(Widget):
                             "allowance before any summary was written.",
                         )
                         yield from self._select_row(
-                            "compact_thinking_level", "Compact thinking level", self._thinking_choices("compact_thinking_level"),
+                            "compact_thinking_level", "Compact thinking level",
+                            self._thinking_choices_with_manual("compact_thinking_level"),
                             "'off' is cheapest but is the value most likely to be silently "
                             "dropped by a virtual model, which then reasons at ITS default.",
+                            extra=self._thinking_number_box("compact_thinking_level"),
                         )
                         yield from self._text_row(
                             "compact_max_tool_iters", "Compact tool rounds",
@@ -1962,6 +2087,9 @@ class SettingsBody(Widget):
                 except ValueError as exc:
                     raise ValueError(f"subagent_route_override: {exc}") from exc
                 out.subagent_route_override = route
+                continue
+            if name in settings_mod.THINKING_FIELDS and isinstance(widget, Select):
+                setattr(out, name, self._thinking_value(name, widget.value))
                 continue
             if isinstance(widget, Switch):
                 setattr(out, name, bool(widget.value))

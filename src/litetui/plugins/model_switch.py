@@ -103,6 +103,8 @@ def switch_model(app, target: str) -> bool:
     app.apply_context_length()
     if app.backend.name == "lmstudio":
         app._probe_thinking()
+    if callable(getattr(app.backend, "effort_scale", None)) and hasattr(app, "_discover_effort_scale"):
+        app._discover_effort_scale()       # T1398: the new model's own scale
     app._rpc_emit_model_state()
     return True
 
@@ -832,6 +834,8 @@ def _start_load(app, target: str, ctx=_USE_DEFAULT) -> None:
         app.fetch_context_window()
         if getattr(app.backend, "name", "") == "lmstudio":
             app._probe_thinking()
+        if callable(getattr(app.backend, "effort_scale", None)) and hasattr(app, "_discover_effort_scale"):
+            app._discover_effort_scale()   # T1398: the new model's own scale
         app._rpc_emit_model_state()
 
     app.run_worker(_go(), group="modelctl", exclusive=True)
@@ -1334,19 +1338,46 @@ class ModelConfigBody(Widget):
                             if key == "reasoning_effort":
                                 # Inherits the GLOBAL thinking level and applies to
                                 # chat AND compaction — not a server default.
-                                inherited = app.thinking_level or None
+                                inherited = app.thinking_level
                                 blank_label = (
                                     f"inherit global ({app.thinking_level})"
-                                    if app.thinking_level else "inherit global (unset)"
+                                    if app.thinking_level is not None else "inherit global (unset)"
                                 )
                                 note = ("applies to chat + compaction; off sends none "
                                        "(no reasoning trace)")
+                                # T1398: for the served model, its template's own levels and numbers.
+                                from litetui.effort_scale import app_scale, as_level, describe, is_number
+                                scale = app_scale(app) if self._key == app.model_id else None
+                                if scale is not None and scale.template_read:
+                                    saved = infer_cfg.get(key)
+                                    choices = [(scale.label(n), "off" if n == "none" else n) for n in scale.names]
+                                    if saved not in (None, "") and saved not in [v for _, v in choices]:
+                                        chip = describe(saved, scale)[0].removeprefix("think:")
+                                        choices.append(((f"manual · {chip}" if is_number(as_level(saved))
+                                                         else f"{chip} (saved)"), saved))
+                                    note = f"levels from {scale.source}; or type a number for this model"
+                                saved = infer_cfg.get(key)
+                                if is_number(as_level(saved)) and saved not in [
+                                        c[1] if isinstance(c, tuple) else c for c in choices]:
+                                    # A stored number with no scale to place it (another model, or a
+                                    # backend that reads no template) must stay an option: a Select
+                                    # that showed blank here saved the override AWAY.
+                                    chip = describe(saved, scale)[0].removeprefix("think:")
+                                    choices = [*choices, (f"manual · {chip}", saved)]
+                                # T1398 (Prefix 1610170e): a manual number here too, by the
+                                # Settings helpers (settings_screen.with_manual_row & co).
+                                from litetui.settings_screen import thinking_number_box, with_manual_row
+                                choices = with_manual_row(choices, saved)
+                                after = [thinking_number_box("inf-reasoning_effort-number",
+                                                             infer_cfg.get(key), scale)]
+                            else:
+                                after = None
                             yield from self._field_rows(
                                 "inf", key, label, kind,
                                 choices if choices is not None else
                                     (f"inherited: {inherited}" if inherited is not None else "server default"),
                                 infer_cfg.get(key),
-                                note=note, blank_label=blank_label,
+                                note=note, blank_label=blank_label, after=after,
                             )
                         if "jinja" in flags and on_llama:
                             yield from self._field_rows(
@@ -1396,7 +1427,8 @@ class ModelConfigBody(Widget):
 
     def _field_rows(self, prefix: str, key: str, label: str, kind: str, extra,
                     current, disabled: bool = False, note: str = "",
-                    blank_label: str = "server default"):
+                    blank_label: str = "server default", after=None):
+        """`after` (optional): widgets placed in the same row, under the control (T1398's number box)."""
         wid = f"{prefix}-{key}"
         with Vertical(classes="set-row"):
             yield Label(label, classes="set-label")
@@ -1410,8 +1442,9 @@ class ModelConfigBody(Widget):
                 yield Select(literal_options(choices), value=current or "", id=wid,
                              allow_blank=False, disabled=disabled)
             elif kind == "select":
-                choices = [(blank_label, "")] + [(c, c) for c in extra]
-                value = current if current in (extra or []) else ""
+                # An entry is a value, or (label, value) where the label carries more (T1398: "high · 0.9").
+                choices = [(blank_label, "")] + [c if isinstance(c, tuple) else (c, c) for c in (extra or [])]
+                value = current if current in [v for _, v in choices[1:]] else ""
                 yield Select(literal_options(choices), value=value, id=wid,
                              allow_blank=False, disabled=disabled)
             else:
@@ -1419,8 +1452,19 @@ class ModelConfigBody(Widget):
                 placeholder = extra if isinstance(extra, str) else ""
                 yield HostedInput(value=shown, placeholder=placeholder or "unset",
                             id=wid, disabled=disabled, classes="set-input")
+            yield from after or ()
             if note:
                 yield Static(note, classes="set-help", markup=False)
+
+    def on_select_changed(self, event: Select.Changed) -> None:
+        """T1398: the per-model thinking number box shows while "manual number…" (or a number) is chosen."""
+        if event.select.id != "inf-reasoning_effort":
+            return
+        from litetui.settings_screen import wants_number_box
+
+        found = self.query("#inf-reasoning_effort-number")
+        if found:
+            found.first().display = wants_number_box(event.value)
 
     # -- state carry across a live host swap --------------------------------
 
@@ -1468,7 +1512,8 @@ class ModelConfigBody(Widget):
             except Exception:
                 continue   # disabled-by-census fields may be absent; keep base value
             if isinstance(widget, Select):
-                raw = widget.value or ""
+                # `is None`, not `or`: a manual thinking number 0 is a value (T1398).
+                raw = "" if widget.value is None else widget.value
                 if raw == "":
                     out.pop(key, None)
                 elif kind == "tri":
@@ -1515,6 +1560,7 @@ class ModelConfigBody(Widget):
             load_cfg = self._collect_group("ld", fields, self._load_cfg())
             infer_fields = _INFER_FIELDS + [("enable_thinking", "", "tri")]
             infer_cfg = self._collect_group("inf", infer_fields, self._infer_cfg())
+            self._collect_thinking_number(infer_cfg)
             schema_text = str(self.query_one("#mc-json-schema", Input).value).strip()
             if schema_text:
                 json.loads(schema_text)   # refuse invalid JSON HERE, by name
@@ -1623,6 +1669,23 @@ class ModelConfigBody(Widget):
 
         app.system_message(f"Saved model config for {key}")
         close_dialog(self, None)
+
+    def _collect_thinking_number(self, infer_cfg: dict) -> None:
+        """T1398: "manual number…" (or a stored number) saves the number in the box, through the same
+        rule and the same "an unchanged stored number is kept" as Settings (settings_screen.manual_number)."""
+        from litetui.settings_screen import manual_number, wants_number_box
+
+        chosen = infer_cfg.get("reasoning_effort")
+        found = self.query("#inf-reasoning_effort-number")
+        if chosen is None or not found or not wants_number_box(chosen):
+            return
+        from litetui.effort_scale import app_scale, backend_label
+
+        app = cast("LiteTUI", self.app)
+        scale = app_scale(app) if self._key == app.model_id else None
+        infer_cfg["reasoning_effort"] = manual_number(
+            "reasoning_effort", found.first().value, self._infer_cfg().get("reasoning_effort"), scale,
+            backend_label(app))
 
     def _say_error(self, text: str) -> None:
         """Put a refusal where the person can see it. Never raises: a panel that

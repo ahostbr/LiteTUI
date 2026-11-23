@@ -47,6 +47,36 @@ SETTINGS_FILENAME = "settings.json"
 
 ThinkingLevel = Literal["off", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"]
 
+#: The fields that hold a reasoning level: a ThinkingLevel name, or (T1398) a manual number that a
+#: model's own template maps (Inkling: 0.0-0.99; DeepSeek: whole numbers 1-100).
+THINKING_FIELDS = ("thinking_level", "compact_thinking_level")
+
+
+def coerce_thinking_level(name: str, raw: Any) -> Any:
+    """A stored reasoning level -> the value to hold, or ValueError naming the field.
+
+    A string is kept as it is (today's files load unchanged). A number must be finite and >= 0, and
+    keeps its JSON type: DeepSeek's template takes an INTEGER, so 60 must not become 60.0. A bool is
+    refused (isinstance(True, int) is True). Text that spells a number ("0.1", from the environment
+    or a hand edit) is that number: no level name is numeric. Nothing is clamped or rounded.
+    """
+    import math
+
+    if isinstance(raw, bool):
+        raise ValueError(f"{name}: {raw!r} is not a reasoning level or number")
+    if isinstance(raw, (int, float)):
+        if not math.isfinite(raw) or raw < 0:
+            raise ValueError(f"{name}: {raw!r} is not a finite number >= 0")
+        return raw
+    if isinstance(raw, str):
+        text = raw.strip()
+        try:
+            number = int(text) if text.lstrip("+").isdigit() else float(text)
+        except ValueError:
+            return raw
+        return coerce_thinking_level(name, number)
+    raise ValueError(f"{name}: {raw!r} is not a reasoning level or number")
+
 # One vocabulary for the footer renderer, keyboard navigation, and settings
 # editor. Authority and plan are intentionally included: they remain always
 # visible, but their position is still part of the user's left-to-right layout.
@@ -444,7 +474,8 @@ class Settings:
     max_tokens_tools: int = 16384
     #: Response budget with tools off.
     max_tokens_chat: int = 4096
-    thinking_level: ThinkingLevel = "medium"
+    #: A level name, or a manual number (T1398; see `coerce_thinking_level`).
+    thinking_level: ThinkingLevel | float = "medium"
     #: LM Studio model ids whose GRADED thinking levels are real (T539-A).
     #:
     #: On the LM Studio backend a graded reasoning_effort is silently dropped
@@ -614,7 +645,7 @@ class Settings:
     compact_keep_recent: int = 4
     #: Effort used for the compaction call. "off" is the cheap ideal but is the
     #: value that gets silently dropped; see compact_max_tokens.
-    compact_thinking_level: ThinkingLevel = "low"
+    compact_thinking_level: ThinkingLevel | float = "low"
     #: Backends whose server keeps a prompt prefix cache that any change near the
     #: start of the prompt throws away. On these, a compaction re-sends the last
     #: chat request unchanged (message 0, tools array, reasoning effort) plus ONE
@@ -845,6 +876,16 @@ def _coerce(name: str, raw: Any, current: Any) -> Any:
     if name == "tool_trusted_interpreters":
         # Unlike ordinary string lists, never coerce malformed input into trust.
         return raw.copy() if isinstance(raw, list) and all(isinstance(x, str) for x in raw) else []
+    if name in THINKING_FIELDS:
+        # Refused, never coerced: a bad value keeps the current one and the log names the field.
+        if raw is None:
+            return current
+        try:
+            return coerce_thinking_level(name, raw)
+        except ValueError as refused:
+            import logging
+            logging.getLogger(__name__).warning("settings: %s refused; keeping %r", refused, current)
+            return current
     t = str(ftype)
     try:
         if raw is None:

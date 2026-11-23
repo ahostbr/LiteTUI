@@ -39,6 +39,11 @@ def backend_levels(app) -> list[str] | None:
     fallbacks for a backend that reports nothing, and an empty list would
     read as "this backend supports no levels", which is a different claim.
     """
+    from litetui.effort_scale import app_scale
+
+    scale = app_scale(app)
+    if scale is not None and scale.template_read:
+        return _as_choices(scale.names) or None       # T1398: the served template's own levels
     metadata = getattr(getattr(app, "backend", None), "reasoning_levels", None)
     if not callable(metadata):
         return None
@@ -52,6 +57,15 @@ def thinking_capabilities(app):
     metadata = getattr(backend, "reasoning_levels", None)
     source = "unavailable"
     levels = []
+    from litetui.effort_scale import app_scale
+
+    scale = app_scale(app)
+    if scale is not None and scale.template_read:
+        # T1398: the levels the served template takes (a template read, or probed through it).
+        return {"levels": ["default", *_as_choices(scale.names)], "source": scale.source,
+                "note": "Levels this model's template accepts; a number from its scale is accepted too.",
+                "numbers": {("off" if k == "none" else k): v for k, v in scale.numbers.items()},
+                "number_wire": scale.number_wire}
     if callable(metadata):
         levels = metadata(model)
         source = "backend model metadata" if levels else "unavailable"
@@ -77,8 +91,17 @@ def thinking_capabilities(app):
 
 
 def set_thinking(app, level):
+    from litetui.effort_scale import app_scale, as_level, backend_label, is_number, number_refusal
+
+    level = as_level(level)
     if level is None or level == "default":
         value = None
+    elif is_number(level):
+        # T1398: the rule /think uses (effort_scale.number_refusal), so RPC and GUI agree.
+        why = number_refusal(level, app_scale(app), backend_label(app))
+        if why:
+            raise ValueError(f"Thinking number {level!r} refused: {why}")
+        value = level
     else:
         if level not in thinking_capabilities(app)["levels"]:
             raise ValueError("Thinking level is not supported by the active backend/model")

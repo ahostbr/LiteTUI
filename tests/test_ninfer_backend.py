@@ -510,21 +510,28 @@ def test_the_levels_are_sent_verbatim_and_off_becomes_none():
     assert _resolve_reasoning_effort(None, "ninfer") is None
 
 
-def test_stale_ninfer_levels_are_folded_before_the_template_sees_them():
-    """Old conversations can still contain levels the picker no longer offers."""
+def test_a_level_is_sent_verbatim_with_no_liteTUI_fold():
+    """T1398 (Ryan: "DO THIS CORRECTLY ... EVERY OTHER OPTION U LISTED WAS A PATCH OR HACK").
+
+    The fold that lived here sent Inkling `xhigh` (0.99) for every `high` (0.9) turn. This path now
+    serves only a model whose template LiteTUI could not read, and NInfer renders a name its template
+    rejects as the nearest accepted one itself (chat_template.cpp:91-103)."""
     from litetui.turn_engine import _resolve_reasoning_effort
 
-    assert _resolve_reasoning_effort("minimal", "ninfer") == "low"
-    assert _resolve_reasoning_effort("high", "ninfer") == "xhigh"
-    assert _resolve_reasoning_effort("max", "ninfer") == "xhigh"
-    assert _resolve_reasoning_effort("invented", "ninfer") is None
+    for level in ("minimal", "low", "medium", "high", "xhigh", "max"):
+        assert _resolve_reasoning_effort(level, "ninfer") == level
+        assert _resolve_reasoning_effort(level, "ninfer", "deepseek-v4.1-flash-coder-ninfer") == level
+    # Never sent before either (the old fold had no entry): NInfer's parser answers 400 to it.
+    assert _resolve_reasoning_effort("ultra", "ninfer") is None
+    # A manual number cannot go out without the model's EffortScale.
+    assert _resolve_reasoning_effort(0.1, "ninfer") is None
 
 
-def test_deepseek_gets_its_own_levels_and_stale_values_fold_to_its_set():
+def test_deepseek_gets_its_own_static_levels_when_the_template_is_not_read():
     """DeepSeek-V4 takes none/low/high/max. Qwen's tuple must not leak onto it.
 
-    Signal: the served id, passed in or cached from /v1/models (`_model_id`).
-    """
+    Signal: the served id, passed in or cached from /v1/models (`_model_id`). These lists are now
+    the fallback for a model whose template could not be read or probed (T1398)."""
     from litetui.turn_engine import _resolve_reasoning_effort
 
     deepseek = "deepseek-v4.1-flash-coder-ninfer"
@@ -533,15 +540,8 @@ def test_deepseek_gets_its_own_levels_and_stale_values_fold_to_its_set():
     backend._model_id = deepseek   # what _list_sync caches
     assert backend.reasoning_levels(None) == ["none", "low", "high", "max"]
     assert backend.reasoning_levels("qwen3.8-27b") == ["none", "low", "medium", "xhigh"]
-
-    # Stored Qwen-era values fold onto DeepSeek's set, as NInfer maps them.
-    assert _resolve_reasoning_effort("xhigh", "ninfer", deepseek) == "max"
-    assert _resolve_reasoning_effort("medium", "ninfer", deepseek) == "high"
-    assert _resolve_reasoning_effort("minimal", "ninfer", deepseek) == "low"
     # Off must go on the wire explicitly: an omitted effort defaults to thinking on.
     assert _resolve_reasoning_effort("off", "ninfer", deepseek) == "none"
-    # Qwen's fold is unchanged.
-    assert _resolve_reasoning_effort("max", "ninfer", "qwen3.8-27b") == "xhigh"
 
 
 def test_an_unsupported_level_is_named_rather_than_read_as_a_broken_engine():

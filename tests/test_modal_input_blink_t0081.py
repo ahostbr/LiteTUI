@@ -128,7 +128,7 @@ def test_stock_input_events_and_validation_are_preserved():
 
 # Supplementary wiring coverage, not a substitute for the real mount above.
 @pytest.mark.parametrize("relative,count", [
-    ("settings_screen.py", 6),
+    ("settings_screen.py", 7),         # T1398: + the manual thinking-number box (thinking_number_box)
     ("user_name_dialog.py", 1),
     ("ask_user_question.py", 1),
     ("hooks_screen.py", 1),

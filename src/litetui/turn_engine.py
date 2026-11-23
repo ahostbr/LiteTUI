@@ -105,10 +105,45 @@ def request_thinks(extra: dict, effort=_UNPINNED) -> bool:
 
     An omitted effort is thinking ON (NInfer's default; the DeepSeek note in _resolve_reasoning_effort). `effort`
     overrides extra's own value, for the compaction that is re-pinned to the chat turn's effort afterwards."""
-    level = extra.get("reasoning_effort") if effort is _UNPINNED else effort
+    kwargs = extra.get("chat_template_kwargs") or {}
+    # T1398: an effort can ride the template kwargs (a manual number, or `none` for a template that maps it).
+    level = (extra.get("reasoning_effort", kwargs.get("reasoning_effort"))
+             if effort is _UNPINNED else effort)
     if level == "none":
         return False
-    return (extra.get("chat_template_kwargs") or {}).get("enable_thinking") is not False
+    return kwargs.get("enable_thinking") is not False
+
+
+def chat_effort(extra: dict) -> tuple[object, str | None]:
+    """(value, placement) of the effort a chat request carries: top-level, in the template kwargs
+    (T1398: a manual number, or "none" for a template that maps it), or (None, None)."""
+    if extra.get("reasoning_effort") is not None:
+        return extra["reasoning_effort"], "top"
+    kwargs = extra.get("chat_template_kwargs") or {}
+    if kwargs.get("reasoning_effort") is not None:
+        return kwargs["reasoning_effort"], "kwargs"
+    return None, None
+
+
+def pin_effort(extra: dict, value, placement: str | None) -> dict:
+    """`extra` with its effort replaced by the chat turn's, IN THE SAME PLACE. The template prints the
+    effort in the first lines of the prompt, so a compaction must render it byte-identically or the
+    engine's prefix cache is thrown away (the measured cost: memory prefix-cache-audit-side-calls).
+    A value with no placement (an older caller) goes top-level, as it always did."""
+    out = dict(extra)
+    out.pop("reasoning_effort", None)
+    kwargs = dict(out.get("chat_template_kwargs") or {})
+    kwargs.pop("reasoning_effort", None)
+    if kwargs:
+        out["chat_template_kwargs"] = kwargs
+    else:
+        out.pop("chat_template_kwargs", None)
+    if value is not None:
+        if placement == "kwargs":
+            out["chat_template_kwargs"] = {**kwargs, "reasoning_effort": value}
+        else:
+            out["reasoning_effort"] = value
+    return out
 
 
 #: Backend -> the request key that caps thinking, and the setting that holds N (T1312 NInfer, T1318 Strata).
@@ -188,9 +223,10 @@ def _resolve_reasoning_effort(
 ) -> str | None:
     """Wire value for reasoning_effort given the user's level, backend and model.
 
-    ninfer: template-safe vocabulary; stale `minimal`/`high`/`max` values from
-    older conversations are folded to `low`/`xhigh` rather than sent into a
-    chat template that rejects them.
+    ninfer: verbatim (T1398). This is the path for a model whose template LiteTUI could not read;
+    one it could read goes through `effort_scale.EffortScale.resolve` instead. The fold that used
+    to live here sent Inkling `xhigh` (0.99) for every `high` (0.9) turn; NInfer itself renders a
+    name its template rejects as the nearest one it accepts (chat_template.cpp:91-103).
     llamacpp: verbatim ("none" for off, the graded level otherwise).
     lmstudio: binary — "none" for off, OMIT (None) for any graded level —
     EXCEPT for a model named in `graded_models`, which gets the level verbatim.
@@ -219,32 +255,20 @@ def _resolve_reasoning_effort(
     contains "qwen3.8-27b", so a substring rule would allowlist the very model
     that drops every level.
     """
-    if not level:
+    if level is None or level == "":
+        return None
+    from litetui.effort_scale import as_level
+
+    if not isinstance(as_level(level), str):
+        # A manual number (T1398), or its text from the owned authority, reaches the wire only
+        # through a model's EffortScale; a backend with no scale cannot carry one: nothing is sent.
         return None
     if level == "off":
         return "none"
     if backend_name == "ninfer":
-        # Folds mirror NInfer's own nearest-accepted mapping for the served template
-        # (ninfer frontend/chat_template.cpp). DeepSeek-V4 takes none/low/high/max, so
-        # its `none` must be sent explicitly: an omitted effort defaults to thinking on.
-        if is_deepseek_model(model_id):
-            return {
-                "none": "none",
-                "minimal": "low",
-                "low": "low",
-                "medium": "high",
-                "high": "high",
-                "xhigh": "max",
-                "max": "max",
-            }.get(level)
-        return {
-            "minimal": "low",
-            "low": "low",
-            "medium": "medium",
-            "high": "xhigh",
-            "xhigh": "xhigh",
-            "max": "xhigh",
-        }.get(level)
+        # T1398: verbatim. `ultra` is a codex/claude name NInfer's parser answers 400 to; it was
+        # never sent here (the old fold had no entry for it) and still is not.
+        return None if level == "ultra" else level
     if backend_name == "strata":
         # Strata's server accepts none/low/medium/high and answers 400 to anything else, so a
         # level saved under another backend is folded onto the nearest one it has.
@@ -384,8 +408,10 @@ class TurnEngine:
         backend_name: str = "",
         graded_thinking_models: tuple[str, ...] | list[str] = (),
         thinking_budget: int | None = None,
+        effort_scale=None,
     ) -> dict:
-        """The request a normal streamed turn sends."""
+        """The request a normal streamed turn sends. `effort_scale`: the served model's
+        `effort_scale.EffortScale`, or None for a backend whose template LiteTUI does not read."""
         kwargs: dict = {
             "model": model_id or "local-model",
             # The live store is merged into `messages` by the caller, not held
@@ -428,12 +454,19 @@ class TurnEngine:
         # Studio's six ("none", "xhigh") are not in it.
         # The per-model Thinking Level (/modelcfg Inference tab) arrives here
         # already merged into extra; blank there means inherit the global.
-        level = extra.pop("reasoning_effort", None) or thinking_level
-        wire = _resolve_reasoning_effort(
-            level, backend_name, model_id, graded_thinking_models
-        )
-        if wire:
-            extra["reasoning_effort"] = wire
+        # `is None`, not `or`: a manual 0 (Inkling's level 0) is a choice, not a blank (T1398).
+        override = extra.pop("reasoning_effort", None)
+        level = thinking_level if override is None or override == "" else override
+        if effort_scale is not None:
+            # The served template's own scale (effort_scale.py): presets verbatim, a manual number
+            # as a number where the server carries one, `off` through the template when it maps it.
+            effort_scale.resolve(level).apply(extra)
+        else:
+            wire = _resolve_reasoning_effort(
+                level, backend_name, model_id, graded_thinking_models
+            )
+            if wire:
+                extra["reasoning_effort"] = wire
         # NInfer streams real prompt-processing progress when asked; LiteTUI
         # reads the `prompt_progress` chunks and shows a measured prefill %
         # instead of the previous-turn projection. Only NInfer serves it, so it
@@ -488,6 +521,7 @@ class TurnEngine:
         model_reasoning_effort: str | None = None,
         thinking_budget: int | None = None,
         pinned_effort=_UNPINNED,
+        effort_scale=None,
     ) -> dict:
         """The request a compaction turn sends.
 
@@ -503,12 +537,16 @@ class TurnEngine:
         # Compaction owns its thinking budget. Chat/model overrides must not
         # replace the dedicated compact_thinking_level setting.
         extra_body: dict = {}
-        wire = side_call_reasoning_effort(
-            thinking_level, backend_name, model_id, graded_thinking_models,
-            supported_reasoning_levels,
-        )
-        if wire:
-            extra_body["reasoning_effort"] = wire
+        if effort_scale is not None:
+            # The served template's scale: a level it lacks lands on its nearest accepted one.
+            effort_scale.resolve(thinking_level).apply(extra_body)
+        else:
+            wire = side_call_reasoning_effort(
+                thinking_level, backend_name, model_id, graded_thinking_models,
+                supported_reasoning_levels,
+            )
+            if wire:
+                extra_body["reasoning_effort"] = wire
         # NInfer streams real prompt-processing progress when asked (the same
         # gate as a chat turn). Without it no `prompt_progress` chunk reaches
         # the compaction loop, so the card shows a wall clock but never the

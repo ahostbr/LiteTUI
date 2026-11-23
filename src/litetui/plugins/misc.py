@@ -7,6 +7,8 @@ because every tools-off refusal names that key to the user and to the model.
 """
 from functools import partial
 
+from litetui.effort_scale import (NONE, app_scale, as_level, backend_label, describe, is_number, number_hint,
+                                  number_refusal, parse_number)
 from litetui.picker import pick
 from litetui.settings import THINKING_LEVELS
 from litetui.thinking_capabilities import backend_levels
@@ -54,14 +56,21 @@ def _apply_thinking_level(app, level: str) -> None:
             + (claude_cache.EFFORT_NOTE if backend_name == "claude" else "")
         )
         return
+    scale = app_scale(app)
     if level == UNSET:
         app.thinking_level = None
         app.update_header()
-        app.system_message("Thinking level unset — LM Studio's default (xhigh) applies.")
+        app.system_message("Thinking level unset — the field is not sent; the template's default applies."
+                           if scale is not None else
+                           "Thinking level unset — LM Studio's default (xhigh) applies.")
         return
 
     app.thinking_level = level
     app.update_header()
+    if scale is not None:
+        # T1398: say what THIS model's template gets for the level, number included.
+        app.system_message(describe(level, scale, backend_label(app))[1])
+        return
     wire = "none" if app.thinking_level == "off" else app.thinking_level
     msg = f"Thinking level: {app.thinking_level} (sends reasoning_effort={wire!r})"
     backend = getattr(getattr(app, "backend", None), "name", "")
@@ -102,6 +111,18 @@ def _thinking_rows(app) -> list[tuple[str, str]]:
                  level.title() + (" · consumes usage limits faster"
                                   if level in ("max", "ultra") else ""))
                 for level in levels] + [(UNSET, "Default · use the backend default")]
+    scale = app_scale(app)
+    if scale is not None and scale.template_read:
+        # T1398: exactly the levels this model's template takes, each with the number it sends.
+        rows = [("off" if name == NONE else name, scale.label(name)) for name in scale.names]
+        if is_number(as_level(app.thinking_level)):
+            rows.append((app.thinking_level,
+                         "manual · " + describe(app.thinking_level, scale)[0].removeprefix("think:")))
+        if scale.numbers:
+            # Prefix 5c1db80f: a manual number from the picker, not only from `/think 0.1`.
+            rows.append((NUMBER_ROW, f"number…  · type one ({number_hint(scale)})"))
+        rows.append((UNSET, "unset  · the field is not sent; the template's default applies"))
+        return rows
     if reported is not None:
         levels = reported
     else:
@@ -128,7 +149,32 @@ def _on_thinking_picked(app, level: str | None) -> None:
     # Esc resolves with None and the callback still fires — see picker.pick.
     if level is None:
         return
+    if level == NUMBER_ROW:
+        _ask_thinking_number(app)
+        return
     _apply_thinking_level(app, level)
+
+
+def _ask_thinking_number(app) -> None:
+    """The picker's number row: ask, check each answer with the rule `/think <n>` uses, then apply."""
+    from litetui.number_choice import ask_number
+
+    scale = app_scale(app)
+    label = backend_label(app)
+
+    def check(text: str):
+        number = parse_number(text)
+        if number is None:
+            raise ValueError(f"{text.strip() or '(blank)'!s} is not a number: type one like 0.1")
+        why = number_refusal(number, scale, label)
+        if why:
+            raise ValueError(f"{format(number, 'g')} not set: {why}")
+        return number
+
+    current = as_level(app.thinking_level)
+    ask_number(app, "Thinking number for this model", number_hint(scale),
+               format(current, "g") if is_number(current) else "", check,
+               lambda number: number is not None and _apply_thinking_number(app, number))
 
 
 def _cmd_think(app, name: str, arg: str) -> None:
@@ -146,24 +192,67 @@ def _cmd_think(app, name: str, arg: str) -> None:
             "Thinking level",
             _thinking_rows(app),
             partial(_on_thinking_picked, app),
-            current=app.thinking_level or UNSET,
+            current=app.thinking_level if app.thinking_level is not None else UNSET,
         )
+    elif _as_number(arg) is not None:
+        _apply_thinking_number(app, _as_number(arg))
     elif arg.lower() in (UNSET, "default", "server"):
         _apply_thinking_level(app, UNSET)
-    elif arg.lower() in [level for level, _ in _thinking_rows(app)]:
+    elif arg.lower() in _typed_levels(app):
         _apply_thinking_level(app, arg.lower())
     else:
-        app.system_message(
-            f"Unknown level: {arg}\nValid: {', '.join(level for level, _ in _thinking_rows(app))}"
-        )
+        app.system_message(f"Unknown level: {arg}\nValid: {', '.join(_typed_levels(app))}")
+
+
+def _typed_levels(app) -> list[str]:
+    """What `/think <word>` takes: the picker's level rows (the number row is the picker's own)."""
+    return [str(level) for level, _ in _thinking_rows(app) if level != NUMBER_ROW]
+
+
+#: The /think picker row that asks for a manual number (an id no level can have).
+NUMBER_ROW = "number…"
+
+_as_number = parse_number
+
+
+def _apply_thinking_number(app, number) -> None:
+    """T1398 (Ryan: "allow both manual number and presets"): a manual reasoning number.
+
+    Accepted when this model's template maps numbers and the server carries one, or when the number
+    is exactly one of the template's own values (sent as that name). Otherwise refused, with why and
+    the numbers that would work. Nothing is stored on a refusal. The rule is effort_scale.number_refusal,
+    shared with the picker's number row, the Settings manual box and set_thinking.
+    """
+    scale = app_scale(app)
+    shown = format(number, "g")
+    if scale is None:
+        reader = getattr(getattr(app, "backend", None), "effort_scale", None)
+        if callable(reader) and getattr(app, "model_id", None):
+            discover = getattr(app, "_discover_effort_scale", None)
+            if callable(discover):
+                discover()
+            app.system_message(f"{shown} not set: this model's effort scale has not been read yet "
+                               "(it is read from the served template) — try again in a moment.")
+            return
+    why = number_refusal(number, scale, backend_label(app))
+    if why:
+        app.system_message(f"{shown} not set: {why}")
+        return
+    app.thinking_level = number
+    app.update_header()
+    app.system_message(describe(number, scale, backend_label(app))[1])
 
 
 def _print_thinking_levels(app) -> None:
     """The pre-T569 text listing, kept verbatim for the RPC transport."""
-    current = app.thinking_level or UNSET
-    if getattr(getattr(app, "backend", None), "name", "") in ("codex", "claude"):
+    current = app.thinking_level if app.thinking_level is not None else UNSET
+    scale = app_scale(app)
+    if getattr(getattr(app, "backend", None), "name", "") in ("codex", "claude") or (
+            scale is not None and scale.template_read):
         app.system_message(f"Thinking level: {current}\n" +
-                           "\n".join(label for _, label in _thinking_rows(app)))
+                           "\n".join(label for _, label in _thinking_rows(app)) +
+                           ("\nUsage: /think <level>, or a number from this model's scale"
+                            if scale is not None else ""))
         return
     note = (
         "\nunset means the field is not sent at all — LM Studio then "
