@@ -63,16 +63,26 @@ ARMS = {
                           "        why = number_refusal(number, scale, label)",
                           "        why = None",
                           ["tests/test_effort_ui.py"]),
-    # 1b: Settings saves a new number without the /think rule.
+    # 1b: the shared manual box (Settings and /modelcfg) saves a new number without the /think rule.
     "settings-skips-rule": ("src/litetui/settings_screen.py",
-                            "        why = number_refusal(number, app_scale(self.app), backend_label(self.app))",
-                            "        why = None",
+                            "    why = number_refusal(number, scale, backend_label)",
+                            "    why = None",
                             ["tests/test_effort_ui.py"]),
-    # 1b: a stored number is re-checked on every Save (blocks Save on a backend with no scale).
+    # 1b: a stored number is re-checked on every save (blocks Save on a backend with no scale).
     "settings-rechecks-stored": ("src/litetui/settings_screen.py",
-                                 "        if is_number(stored) and float(stored) == float(number):",
-                                 "        if False:",
+                                 "    if is_number(stored) and float(stored) == float(number):",
+                                 "    if False:",
                                  ["tests/test_effort_ui.py"]),
+    # Prefix 1610170e: /modelcfg skips the rule (the typed text passes as "the stored number").
+    "modelcfg-skips-rule": ("src/litetui/plugins/model_switch.py",
+                            '"reasoning_effort", found.first().value, self._infer_cfg().get("reasoning_effort"), scale,',
+                            '"reasoning_effort", found.first().value, found.first().value, scale,',
+                            ["tests/test_effort_ui.py"]),
+    # /modelcfg with no scale loses a stored per-model number (the Select shows blank, apply drops it).
+    "modelcfg-drops-stored-number": ("src/litetui/plugins/model_switch.py",
+                                     "                                if is_number(as_level(saved)) and saved not in [",
+                                     "                                if False and saved not in [",
+                                     ["tests/test_effort_ui.py"]),
     # 1b: Settings ignores the box and saves the Select's value ("manual").
     "settings-ignores-box": ("src/litetui/settings_screen.py",
                              "                setattr(out, name, self._thinking_value(name, widget.value))",

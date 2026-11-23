@@ -407,6 +407,95 @@ async def test_pilot_settings_manual_number_shown_where_numbers_travel():
             a.save_screenshot(filename="settings_manual_number_llama.svg", path=str(shots))
 
 
+async def _open_modelcfg_inference(a, pilot):
+    from textual.widgets import TabbedContent
+
+    from litetui.plugins.model_switch import ModelConfigBody, ModelConfigScreen
+
+    a.model_rows = {}
+    a.push_screen(ModelConfigScreen(a.model_id))
+    for _ in range(6):
+        await pilot.pause()
+    body = a.screen.query_one(ModelConfigBody)
+    body.query_one("#mc-tabs", TabbedContent).active = "mc-infer"
+    await pilot.pause()
+    body.query_one("#inf-reasoning_effort").scroll_visible(animate=False)
+    await pilot.pause()
+    await pilot.pause()
+    return body
+
+
+@pytest.mark.asyncio
+async def test_pilot_modelcfg_per_model_number_saves_refuses_and_keeps_a_stored_one():
+    """Prefix 1610170e: /modelcfg's per-model override takes a manual number too, by the Settings
+    helpers: a new number goes through the /think rule, a refusal keeps the panel open naming the
+    field, and an unchanged stored number is kept."""
+    from textual.widgets import Input, Select, Static
+
+    from litetui.plugins.model_switch import ModelConfigBody
+    from litetui.settings_screen import MANUAL_THINKING
+
+    a = _real_app(_inkling())                   # NInfer today: only the template's own numbers go
+    a.settings.model_infer_overrides = {}
+    async with a.run_test(size=(130, 46)) as pilot:
+        body = await _open_modelcfg_inference(a, pilot)
+        select = body.query_one("#inf-reasoning_effort", Select)
+        box = body.query_one("#inf-reasoning_effort-number", Input)
+        labels = [str(p) for p, _ in select._options]
+        assert "high · 0.9" in labels and "manual number…" in labels
+        assert box.display is False
+        select.value = MANUAL_THINKING
+        await pilot.pause()
+        assert box.display is True
+
+        box.value = "0.5"
+        body.action_apply()
+        await pilot.pause()
+        assert a.screen.query(ModelConfigBody), "a refused number keeps the panel open"
+        error = str(body.query_one("#mc-error", Static).render())
+        assert error.startswith("Cannot apply inkling-2-mini: reasoning_effort: 0.5 not set: "
+                                "This server cannot send a number to the template yet.")
+        assert "reasoning_effort" not in a.settings.model_infer_overrides.get("inkling-2-mini", {})
+        if shots := _shots():
+            a.save_screenshot(filename="modelcfg_manual_number_refused.svg", path=str(shots))
+
+        box.value = "0.1"                       # Inkling maps minimal to 0.1: sent as minimal
+        body.action_apply()
+        for _ in range(4):
+            await pilot.pause()
+        assert a.settings.model_infer_overrides["inkling-2-mini"]["reasoning_effort"] == 0.1
+
+    # Reopened on a backend with no scale: shown as "manual · 0.1 (not sent)", kept on apply.
+    class Strata:
+        name, label = "strata", "Strata"
+
+        def reasoning_levels(self, model=None):
+            return ["none", "low", "medium", "high"]
+
+        async def apply_load_settings(self, key, config, *, notice=None):
+            pass
+    b = owned_app()
+    b._connect = lambda: None
+    b.convo_dir = None
+    b.skills = []
+    b.backend = Strata()
+    b.model_id = "inkling-2-mini"
+    b.settings.model_infer_overrides = {"inkling-2-mini": {"reasoning_effort": 0.1}}
+    async with b.run_test(size=(130, 46)) as pilot:
+        body = await _open_modelcfg_inference(b, pilot)
+        select = body.query_one("#inf-reasoning_effort", Select)
+        box = body.query_one("#inf-reasoning_effort-number", Input)
+        assert select.value == 0.1 and "manual · 0.1 (not sent)" in [str(p) for p, _ in select._options]
+        assert box.display is True and box.value == "0.1"
+        if shots := _shots():
+            b.save_screenshot(filename="modelcfg_manual_number_stored.svg", path=str(shots))
+        body.action_apply()
+        for _ in range(4):
+            await pilot.pause()
+        assert b.settings.model_infer_overrides["inkling-2-mini"]["reasoning_effort"] == 0.1, \
+            "an unchanged stored number must survive an apply on a backend with no scale"
+
+
 @pytest.mark.asyncio
 async def test_pilot_settings_thinking_select_shows_the_numbers():
     from textual.widgets import Input, Select

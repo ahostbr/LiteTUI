@@ -159,6 +159,63 @@ def thinking_choices(backend, model_id, current, scale=None):
         return [*THINKING_CHOICES, (f"{current} (saved; not in this list)", current)]
     return THINKING_CHOICES
 
+# ── T1398: the manual reasoning number, ONE implementation for every place a level is chosen ──────
+#
+# Ryan: "allow both manual number and presets". A level Select keeps the presets (each with its
+# number) and gains a "manual number…" row; choosing it, or a stored number's "manual · 0.1" row,
+# shows a box for the number. A NEW number is checked with effort_scale.number_refusal, the rule
+# /think <n> uses; an unchanged stored number is kept as it is, so a number saved for another model
+# never blocks a save (a refusal is a ValueError naming the field, like every other field's).
+# Used by Settings (Thinking level, Compact thinking level) and /modelcfg (the per-model override).
+
+
+def with_manual_row(choices, stored):
+    """`choices` plus the "manual number…" row, unless the stored value is already a number."""
+    from litetui.effort_scale import as_level, is_number
+
+    choices = list(choices)
+    if not is_number(as_level(stored)):
+        choices.append(("manual number…", MANUAL_THINKING))
+    return choices
+
+
+def wants_number_box(value) -> bool:
+    """Does this Select value mean "the number in the box"? (the manual row, or a stored number)"""
+    from litetui.effort_scale import as_level, is_number
+
+    return value == MANUAL_THINKING or is_number(as_level(value))
+
+
+def thinking_number_box(box_id: str, stored, scale, disabled: bool = False):
+    """The box a manual number is typed in: holds the stored number, shown only while it is one."""
+    from litetui.effort_scale import as_level, is_number, number_hint
+
+    stored = as_level(stored)
+    box = HostedInput(value=format(stored, "g") if is_number(stored) else "",
+                      placeholder=f"a number — {number_hint(scale)}",
+                      id=box_id, classes="set-input", disabled=disabled)
+    box.display = is_number(stored)
+    return box
+
+
+def manual_number(field: str, text: str, stored, scale, backend_label: str):
+    """The number typed for `field`: refused by the /think rule unless it is the stored one, unchanged."""
+    from litetui.effort_scale import as_level, is_number, number_refusal, parse_number
+
+    text = (text or "").strip()
+    number = parse_number(text)
+    if number is None:
+        raise ValueError(f"{field}: {text or '(blank)'} is not a reasoning number; type one like 0.1, "
+                         "or pick a level")
+    stored = as_level(stored)
+    if is_number(stored) and float(stored) == float(number):
+        return stored
+    why = number_refusal(number, scale, backend_label)
+    if why:
+        raise ValueError(f"{field}: {format(number, 'g')} not set: {why}")
+    return number
+
+
 def _theme_choices(custom: dict | None = None):
     """Built-ins (lights stripped) + the LiteSuite ports + the shades + any
     custom themes, computed at call time — a module-level constant missed
@@ -728,31 +785,18 @@ class SettingsBody(Widget):
             yield Static(note, classes="set-help")
 
     # ── T1398: the manual reasoning number (Prefix 5c1db80f 1b) ─────────────────────────────────
-    #
-    # Ryan: "allow both manual number and presets". The Select keeps the presets (each with its
-    # number) and gains a "manual number…" row; choosing it, or a stored number's "manual · 0.1" row,
-    # shows a box for the number. _collect checks a NEW number with effort_scale.number_refusal, the
-    # rule /think <n> uses; an unchanged stored number is kept as it is, so a number saved for another
-    # model never blocks Save here (a refusal is a named error, like every other field's).
+    # The module-level helpers above (with_manual_row, thinking_number_box, wants_number_box,
+    # manual_number) are shared with /modelcfg's per-model override (plugins/model_switch.py).
 
     def _thinking_choices_with_manual(self, name: str):
-        from litetui.effort_scale import as_level, is_number
-
-        choices = list(self._thinking_choices(name))
-        if not is_number(as_level(getattr(self._start, name))):
-            choices.append(("manual number…", MANUAL_THINKING))
-        return choices
+        return with_manual_row(self._thinking_choices(name), getattr(self._start, name))
 
     def _thinking_number_box(self, name: str):
-        from litetui.effort_scale import app_scale, as_level, is_number, number_hint
+        from litetui.effort_scale import app_scale
 
         def build(disabled: bool):
-            stored = as_level(getattr(self._start, name))
-            box = HostedInput(value=format(stored, "g") if is_number(stored) else "",
-                              placeholder=f"a number — {number_hint(app_scale(self.app))}",
-                              id=f"f-{name}-number", classes="set-input", disabled=disabled)
-            box.display = is_number(stored)
-            yield box
+            yield thinking_number_box(f"f-{name}-number", getattr(self._start, name), app_scale(self.app),
+                                      disabled)
         return build
 
     @on(Select.Changed)
@@ -760,31 +804,18 @@ class SettingsBody(Widget):
         name = (event.select.id or "").removeprefix("f-")
         if name not in settings_mod.THINKING_FIELDS:
             return
-        from litetui.effort_scale import is_number
-
         found = self.query(f"#f-{name}-number")
         if found:
-            found.first().display = event.value == MANUAL_THINKING or is_number(event.value)
+            found.first().display = wants_number_box(event.value)
 
     def _thinking_value(self, name: str, chosen):
         """The value a Thinking level Select saves: a preset as chosen, or the number in its box."""
-        from litetui.effort_scale import (app_scale, as_level, backend_label, is_number, number_refusal,
-                                          parse_number)
+        from litetui.effort_scale import app_scale, backend_label
 
-        if chosen != MANUAL_THINKING and not is_number(chosen):
+        if not wants_number_box(chosen):
             return chosen
-        text = self.query_one(f"#f-{name}-number", Input).value.strip()
-        number = parse_number(text)
-        if number is None:
-            raise ValueError(f"{name}: {text or '(blank)'} is not a reasoning number; type one like 0.1, "
-                             "or pick a level")
-        stored = as_level(getattr(self._start, name))
-        if is_number(stored) and float(stored) == float(number):
-            return stored
-        why = number_refusal(number, app_scale(self.app), backend_label(self.app))
-        if why:
-            raise ValueError(f"{name}: {format(number, 'g')} not set: {why}")
-        return number
+        return manual_number(name, self.query_one(f"#f-{name}-number", Input).value,
+                             getattr(self._start, name), app_scale(self.app), backend_label(self.app))
 
     def _optional_choice_row(self, name: str, label: str, values, blank_label: str, help_text: str):
         """A Select for an optional string: its first row is "" and means UNSET (`_collect` saves None)."""
