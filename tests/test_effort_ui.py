@@ -170,6 +170,24 @@ def test_set_thinking_takes_a_number_by_the_same_rule_as_think():
     assert caps["numbers"]["high"] == 0.9 and caps["number_wire"] is False
 
 
+def test_the_picker_has_a_number_row_only_where_the_template_maps_numbers():
+    rows = dict(misc._thinking_rows(_App(_Backend(_inkling()), _inkling())))
+    assert rows[misc.NUMBER_ROW] == "number…  · type one (This server sends only the template's own numbers: " \
+                                    "0, 0.1, 0.2, 0.7, 0.9, 0.99.)"
+    rows = dict(misc._thinking_rows(_App(_Backend(_inkling(True)), _inkling(True))))
+    assert rows[misc.NUMBER_ROW] == "number…  · type one (Any number from 0 to 0.99.)"
+    assert misc.NUMBER_ROW not in dict(misc._thinking_rows(_App(_Backend(QWEN), QWEN)))
+
+
+def test_the_number_row_is_not_a_level_you_can_type():
+    app = _App(_Backend(_inkling()), _inkling())
+    misc._cmd_think(app, "think", misc.NUMBER_ROW)
+    assert app.thinking_level == "high"
+    unknown, valid = app.messages[-1].split("\n")
+    assert unknown == f"Unknown level: {misc.NUMBER_ROW}"
+    assert valid == "Valid: off, minimal, low, medium, high, xhigh, max, unset"
+
+
 # ── the settings control ────────────────────────────────────────────────────────────────────────
 
 
@@ -239,6 +257,44 @@ async def test_pilot_think_number_and_header():
         assert "not&#160;set" in screen or "0.5 not set" in screen, "the refusal must be on screen"
         if shots := _shots():
             a.save_screenshot(filename="think_numbers_inkling_ninfer.svg", path=str(shots))
+
+
+@pytest.mark.asyncio
+async def test_pilot_think_picker_number_row_asks_refuses_then_sets():
+    """Prefix 5c1db80f 1a: the picker's "number…" row asks for the value and goes through the /think
+    rule; a refused number keeps the dialog open with the reason and stores nothing."""
+    from textual.widgets import Input, OptionList, Static
+
+    from litetui.number_choice import NumberScreen
+
+    a = _real_app(_inkling())
+    async with a.run_test(size=(120, 40)) as pilot:
+        misc._cmd_think(a, "think", "")
+        await pilot.pause()
+        ol = a.screen.query_one(OptionList)
+        ids = [ol.get_option_at_index(i).id for i in range(ol.option_count)]
+        ol.highlighted = ids.index(misc.NUMBER_ROW)
+        if shots := _shots():
+            a.save_screenshot(filename="think_picker_number_row.svg", path=str(shots))
+        await pilot.press("enter")
+        await pilot.pause()
+        assert isinstance(a.screen, NumberScreen)
+        box = a.screen.query_one("#number-input", Input)
+        box.value = "0.5"
+        await pilot.press("enter")
+        await pilot.pause()
+        assert isinstance(a.screen, NumberScreen), "a refused number keeps the dialog open"
+        error = str(a.screen.query_one("#number-error", Static).render())
+        assert error.startswith("0.5 not set: This server cannot send a number to the template yet.")
+        assert a.thinking_level == "high"
+        if shots := _shots():
+            a.save_screenshot(filename="think_number_dialog_refused.svg", path=str(shots))
+        box.value = "0.1"
+        await pilot.press("enter")
+        await pilot.pause()
+        assert not isinstance(a.screen, NumberScreen)
+        assert a.thinking_level == 0.1
+        assert "think:0.1 (as minimal)" in a.sub_title
 
 
 @pytest.mark.asyncio
