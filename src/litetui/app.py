@@ -3153,7 +3153,7 @@ class LiteTUI(App):
             if refusal:
                 raise llm_backend.BackendError(refusal)
             from litetui.effort_scale import effort_body
-            side_scale = (await asyncio.to_thread(self._effort_scale_now)
+            side_scale = (await asyncio.to_thread(getattr(self, "_effort_scale_now", lambda: None))
                           if fold_model == self.model_id else None)
             resp = await model_transport.for_app(self).create(
                 purpose="tool-summary",
@@ -7904,7 +7904,7 @@ class LiteTUI(App):
             # T1398: on the current model the scale decides "off" (Inkling's "none" through the
             # template, which a top-level "none" on llama.cpp would have erased).
             from litetui.effort_scale import effort_body
-            card_scale = await asyncio.to_thread(self._effort_scale_now) if model == self.model_id else None
+            card_scale = await asyncio.to_thread(getattr(self, "_effort_scale_now", lambda: None)) if model == self.model_id else None
             if card_scale is not None:
                 extra = effort_body(card_scale, "off")
             resp = await model_transport.for_app(self).create(
@@ -9617,7 +9617,7 @@ class LiteTUI(App):
             self._glassbox(
                 "context", 1.0, f"{len(request_messages)} messages", discrete=True
             )
-            effort_scale = await asyncio.to_thread(self._effort_scale_now)
+            effort_scale = await asyncio.to_thread(getattr(self, "_effort_scale_now", lambda: None))
             kwargs = TurnEngine.chat_request(
                 model_id=self.model_id,
                 messages=request_messages,
@@ -10976,7 +10976,7 @@ class LiteTUI(App):
             # A counter, not range(): the owner retry gets its OWN budget of rounds (below),
             # so STEP 1 spending all of compact_max_tool_iters cannot starve the retry.
             round_no, round_budget = 0, self.settings.compact_max_tool_iters
-            compact_scale = await asyncio.to_thread(self._effort_scale_now)
+            compact_scale = await asyncio.to_thread(getattr(self, "_effort_scale_now", lambda: None))
             learned_cap = None  # the room a server once named; later rounds start from it
             said_cut = False
             while round_no < round_budget:

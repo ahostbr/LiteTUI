@@ -108,9 +108,10 @@ def test_strata_is_a_listed_backend_the_factory_builds():
 def test_it_answers_everything_the_ninfer_backend_answers():
     """The app calls backend methods without a guard, so a missing one is a crash (the
     lesson recorded in ninfer_backend.py). NInfer's public surface is the contract; the
-    two names below are NInfer-only and every caller of them uses getattr."""
+    names below are NInfer-only and every caller of them uses getattr (effort_scale: T1398,
+    the served template's effort scale; Strata's server rewrites efforts itself)."""
     public = lambda cls: {a for a in dir(cls) if not a.startswith("_")}  # noqa: E731
-    assert public(NInferBackend) - public(StrataBackend) == {"engine_concurrency", "DEAD_HOST"}
+    assert public(NInferBackend) - public(StrataBackend) == {"engine_concurrency", "DEAD_HOST", "effort_scale"}
 
 
 def test_a_loaded_server_is_ready_and_reports_its_window(server):
