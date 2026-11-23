@@ -88,6 +88,7 @@ PLUGIN_LOAD_ORDER: tuple[str, ...] = (
     "litetui.plugins.tasks_plugin",
     "litetui.plugins.goal_loop_plugin",
     "litetui.plugins.glassbox_plugin",
+    "litetui.plugins.egress_plugin",   # T1418: /egress status | test | refresh
 )
 
 # Module-level criticality, for failures that happen BEFORE a manifest exists

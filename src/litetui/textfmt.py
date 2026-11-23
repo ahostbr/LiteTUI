@@ -73,6 +73,7 @@ TOOL_DENIED_REQUIRED: dict[str, tuple[str, ...]] = {
     "no-host": ("name",),
     "tool-disabled": ("name",),
     "tools-off": (),
+    "egress-blocked": ("name", "target", "rule", "data"),
 }
 
 TOOL_DENIED_FALLBACK: dict[str, str] = {
@@ -107,6 +108,12 @@ TOOL_DENIED_FALLBACK: dict[str, str] = {
         "-> Agent loop -> Tools enabled. Tell them that in plain language, "
         "then answer as best you can without tools. Do not retry and do not "
         "try another tool."
+    ),
+    "egress-blocked": (
+        "[egress blocked] {name}: {target} is on the user's egress blocklist ({rule}; data: {data}). "
+        "Nothing ran and nothing changed. This is a setting, not a fault: do not retry, and do not "
+        "route around it (another tool, a proxy, a mirror, a different spelling of the address). "
+        "Only the user can allow a host: Settings -> egress_allow, or /egress status."
     ),
 }
 

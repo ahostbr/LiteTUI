@@ -231,9 +231,26 @@ _data_lock = threading.Lock()
 _data_cache: dict[str, tuple[float, BlockData]] = {}
 
 
+def user_data_path() -> Path:
+    """Where `/egress refresh` writes: the user's data dir, never the installed package."""
+    from litetui import paths
+    return paths.data_root() / "egress_blocklist.json"
+
+
+def data_path() -> Path:
+    """The user's refreshed file when there is one, else the one shipped in the package."""
+    try:
+        user = user_data_path()
+        if user.is_file():
+            return user
+    except Exception:
+        pass
+    return DATA_PATH
+
+
 def load_data(path: Path | str | None = None) -> BlockData:
     """Read (and cache by mtime) the blocklist file. Never raises: a bad file is an `error`."""
-    p = Path(path) if path else DATA_PATH
+    p = Path(path) if path else data_path()
     try:
         mtime = p.stat().st_mtime
     except OSError as exc:
@@ -318,14 +335,15 @@ class EgressPolicy:
     # -- single address -------------------------------------------------------
 
     def _ip_verdict(self, ip, target: str) -> Verdict:
-        if ip.is_loopback or ip.is_private or ip.is_link_local or ip.is_unspecified:
-            return Verdict(False, target=target, ip=str(ip))
         for aset, entry, note in self._allow_sets:
             if aset.find(ip):
                 return Verdict(False, kind="allowed", target=target, ip=str(ip), note=f"allowed by {entry}" + (f": {note}" if note else ""))
+        # The user's own extra list is checked BEFORE the never-blocked ranges: they asked for it by name.
         if self._extra_set is not None and (cidr := self._extra_set.find(ip)):
             return Verdict(True, rule=f"{cidr} (your extra blocked list)", source="egress_extra_blocked setting",
                            target=target, ip=str(ip), kind="extra")
+        if ip.is_loopback or ip.is_private or ip.is_link_local or ip.is_unspecified:
+            return Verdict(False, target=target, ip=str(ip))
         for aset in self.data.sets:
             if cidr := aset.find(ip):
                 return Verdict(True, rule=f"{cidr} ({aset.name})", source=aset.source, data_date=aset.fetched,
@@ -339,11 +357,13 @@ class EgressPolicy:
         if ip is None:
             return Verdict(False, target=target, note="not an IP literal")
         if not self.enabled:
-            return Verdict(False, target=target, ip=str(ip))
+            return Verdict(False, target=target, ip=str(ip), addresses=(str(ip),))
         for cand in (ip, *embedded_v4(ip)):
             v = self._ip_verdict(cand, target)
-            if v.blocked or v.kind == "allowed":
+            if v.blocked:
                 return v
+            if v.kind == "allowed":
+                return Verdict(False, kind="allowed", target=target, ip=str(ip), note=v.note, addresses=(str(ip),))
         return Verdict(False, target=target, ip=str(ip), addresses=(str(ip),))
 
     # -- names ----------------------------------------------------------------

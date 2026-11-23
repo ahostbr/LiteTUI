@@ -603,6 +603,18 @@ class Settings:
     #: remembered from earlier in the same conversation still reaches the host.
     tools_disabled: list[str] = field(default_factory=list)
 
+    # ── Network egress block for TOOL paths (egress_policy.py, T1418) ────────
+    #: Refuse, in words and with a log line, any tool call whose network target is in China
+    #: (APNIC country code CN), a Chinese cloud's range, or a listed domain. DEFAULT ON (Ryan
+    #: 2026-11-23: "make the entire range blocked in litetui"). Tool paths only: model
+    #: backends are out of scope and never consult it. DEVICE scope: one machine, one policy.
+    egress_block_enabled: bool = True
+    #: Extra hosts, domains, IPs or CIDRs to refuse, comma separated.
+    egress_extra_blocked: list[str] = field(default_factory=list)
+    #: Exceptions, comma separated: `host`, `.domain` or CIDR, optionally `host # why`. An
+    #: exception beats every block rule, and the note is shown wherever it applies.
+    egress_allow: list[str] = field(default_factory=list)
+
     # ── Tool output context (tool_context.py) ────────────────────────────────
     #: What a tool's output contributes to the conversation: "off" puts the raw
     #: in verbatim (the baseline), "llm-tool-mask" replaces it with a pointer
