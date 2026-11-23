@@ -457,6 +457,9 @@ async def test_pilot_modelcfg_per_model_number_saves_refuses_and_keeps_a_stored_
                                 "This server cannot send a number to the template yet.")
         assert "reasoning_effort" not in a.settings.model_infer_overrides.get("inkling-2-mini", {})
         if shots := _shots():
+            box.scroll_visible(animate=False)
+            await pilot.pause()
+            await pilot.pause()
             a.save_screenshot(filename="modelcfg_manual_number_refused.svg", path=str(shots))
 
         box.value = "0.1"                       # Inkling maps minimal to 0.1: sent as minimal
@@ -488,6 +491,9 @@ async def test_pilot_modelcfg_per_model_number_saves_refuses_and_keeps_a_stored_
         assert select.value == 0.1 and "manual · 0.1 (not sent)" in [str(p) for p, _ in select._options]
         assert box.display is True and box.value == "0.1"
         if shots := _shots():
+            box.scroll_visible(animate=False)
+            await pilot.pause()
+            await pilot.pause()
             b.save_screenshot(filename="modelcfg_manual_number_stored.svg", path=str(shots))
         body.action_apply()
         for _ in range(4):
