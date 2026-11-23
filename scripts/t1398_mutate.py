@@ -48,6 +48,36 @@ ARMS = {
                          "    if isinstance(raw, bool):\n        raise ValueError",
                          "    if False:\n        raise ValueError",
                          ["tests/test_thinking_number_setting.py"]),
+    # Prefix 5c1db80f 2: a scale that could not be read is probed again on every turn.
+    "miss-not-cached": ("src/litetui/app.py",
+                        "        if miss is not None and time.monotonic() - miss[0] < EFFORT_SCALE_MISS_TTL:",
+                        "        if False:",
+                        ["tests/test_effort_wire_capture.py"]),
+    # 1a: the picker loses its number row.
+    "no-number-row": ("src/litetui/plugins/misc.py",
+                      "        if scale.numbers:\n            # Prefix 5c1db80f",
+                      "        if False:\n            # Prefix 5c1db80f",
+                      ["tests/test_effort_ui.py"]),
+    # 1a: the number dialog takes any number (no /think rule).
+    "dialog-skips-rule": ("src/litetui/plugins/misc.py",
+                          "        why = number_refusal(number, scale, label)",
+                          "        why = None",
+                          ["tests/test_effort_ui.py"]),
+    # 1b: Settings saves a new number without the /think rule.
+    "settings-skips-rule": ("src/litetui/settings_screen.py",
+                            "        why = number_refusal(number, app_scale(self.app), backend_label(self.app))",
+                            "        why = None",
+                            ["tests/test_effort_ui.py"]),
+    # 1b: a stored number is re-checked on every Save (blocks Save on a backend with no scale).
+    "settings-rechecks-stored": ("src/litetui/settings_screen.py",
+                                 "        if is_number(stored) and float(stored) == float(number):",
+                                 "        if False:",
+                                 ["tests/test_effort_ui.py"]),
+    # 1b: Settings ignores the box and saves the Select's value ("manual").
+    "settings-ignores-box": ("src/litetui/settings_screen.py",
+                             "                setattr(out, name, self._thinking_value(name, widget.value))",
+                             "                setattr(out, name, widget.value)",
+                             ["tests/test_effort_ui.py"]),
 }
 
 arm = sys.argv[1]

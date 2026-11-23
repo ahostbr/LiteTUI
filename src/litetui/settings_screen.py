@@ -107,6 +107,10 @@ NOT_A_SETTINGS_CONTROL = frozenset({
 })
 
 
+#: The Thinking level Select row that reveals the manual number box (T1398).
+MANUAL_THINKING = "manual"
+
+
 def thinking_choices(backend, model_id, current, scale=None):
     """(label, value) rows the Thinking level select offers on `backend`.
 
@@ -146,6 +150,11 @@ def thinking_choices(backend, model_id, current, scale=None):
         return choices
     # A saved level this list does not carry (a NInfer/llama seat running at "max", as DS-pelican-4 did on 2026-11-08) must still
     # be an option: Textual's Select raises InvalidSelectValueError for a value outside its options, and /settings died on mount.
+    from litetui.effort_scale import describe, is_number
+
+    if is_number(current):
+        # T1398: a stored number on a backend with no scale; the chip says it is not sent here.
+        return [*THINKING_CHOICES, (f"manual · {describe(current, None)[0].removeprefix('think:')}", current)]
     if current and current not in [value for _, value in THINKING_CHOICES]:
         return [*THINKING_CHOICES, (f"{current} (saved; not in this list)", current)]
     return THINKING_CHOICES
@@ -697,11 +706,13 @@ class SettingsBody(Widget):
         return thinking_choices(getattr(self.app, "backend", None), getattr(self.app, "model_id", None),
                                 getattr(self._start, name), app_scale(self.app))
 
-    def _select_row(self, name: str, label: str, choices, help_text: str):
+    def _select_row(self, name: str, label: str, choices, help_text: str, extra=None):
+        """`extra(disabled)` (optional) yields more controls inside the same row, under the Select."""
         locked = settings_mod.source_of(name)
         capability = self._backend_control(name)
         if capability:
             help_text = capability.help
+        disabled = locked is not None or bool(capability and not capability.editable)
         with Vertical(classes="set-row"):
             yield Label(label, classes="set-label")
             yield Select(
@@ -709,10 +720,71 @@ class SettingsBody(Widget):
                 value=getattr(self._start, name),
                 id=f"f-{name}",
                 allow_blank=False,
-                disabled=locked is not None or bool(capability and not capability.editable),
+                disabled=disabled,
             )
+            if extra is not None:
+                yield from extra(disabled)
             note = f"LOCKED by ${locked}.  {help_text}" if locked else help_text
             yield Static(note, classes="set-help")
+
+    # ── T1398: the manual reasoning number (Prefix 5c1db80f 1b) ─────────────────────────────────
+    #
+    # Ryan: "allow both manual number and presets". The Select keeps the presets (each with its
+    # number) and gains a "manual number…" row; choosing it, or a stored number's "manual · 0.1" row,
+    # shows a box for the number. _collect checks a NEW number with effort_scale.number_refusal, the
+    # rule /think <n> uses; an unchanged stored number is kept as it is, so a number saved for another
+    # model never blocks Save here (a refusal is a named error, like every other field's).
+
+    def _thinking_choices_with_manual(self, name: str):
+        from litetui.effort_scale import as_level, is_number
+
+        choices = list(self._thinking_choices(name))
+        if not is_number(as_level(getattr(self._start, name))):
+            choices.append(("manual number…", MANUAL_THINKING))
+        return choices
+
+    def _thinking_number_box(self, name: str):
+        from litetui.effort_scale import app_scale, as_level, is_number, number_hint
+
+        def build(disabled: bool):
+            stored = as_level(getattr(self._start, name))
+            box = HostedInput(value=format(stored, "g") if is_number(stored) else "",
+                              placeholder=f"a number — {number_hint(app_scale(self.app))}",
+                              id=f"f-{name}-number", classes="set-input", disabled=disabled)
+            box.display = is_number(stored)
+            yield box
+        return build
+
+    @on(Select.Changed)
+    def _thinking_select_changed(self, event: Select.Changed) -> None:
+        name = (event.select.id or "").removeprefix("f-")
+        if name not in settings_mod.THINKING_FIELDS:
+            return
+        from litetui.effort_scale import is_number
+
+        found = self.query(f"#f-{name}-number")
+        if found:
+            found.first().display = event.value == MANUAL_THINKING or is_number(event.value)
+
+    def _thinking_value(self, name: str, chosen):
+        """The value a Thinking level Select saves: a preset as chosen, or the number in its box."""
+        from litetui.effort_scale import (app_scale, as_level, backend_label, is_number, number_refusal,
+                                          parse_number)
+
+        if chosen != MANUAL_THINKING and not is_number(chosen):
+            return chosen
+        text = self.query_one(f"#f-{name}-number", Input).value.strip()
+        number = parse_number(text)
+        if number is None:
+            raise ValueError(f"{name}: {text or '(blank)'} is not a reasoning number; type one like 0.1, "
+                             "or pick a level")
+        stored = as_level(getattr(self._start, name))
+        if is_number(stored) and float(stored) == float(number):
+            return stored
+        why = number_refusal(number, app_scale(self.app), backend_label(self.app))
+        if why:
+            raise ValueError(f"{name}: {format(number, 'g')} not set: {why}")
+        return number
 
     def _optional_choice_row(self, name: str, label: str, values, blank_label: str, help_text: str):
         """A Select for an optional string: its first row is "" and means UNSET (`_collect` saves None)."""
@@ -1341,10 +1413,11 @@ class SettingsBody(Widget):
 
                         yield self._section_header("generation-reasoning")
                         yield from self._select_row(
-                            "thinking_level", "Thinking level", self._thinking_choices(),
+                            "thinking_level", "Thinking level", self._thinking_choices_with_manual("thinking_level"),
                             "A level THIS SERVER accepts is not always one the LOADED model "
                             "accepts — a virtual model drops an unsupported value with a 200 "
                             "and reasons at its own default instead.",
+                            extra=self._thinking_number_box("thinking_level"),
                         )
                         yield self._section_header("generation-budget")
                         yield from self._text_row(
@@ -1591,9 +1664,11 @@ class SettingsBody(Widget):
                             "allowance before any summary was written.",
                         )
                         yield from self._select_row(
-                            "compact_thinking_level", "Compact thinking level", self._thinking_choices("compact_thinking_level"),
+                            "compact_thinking_level", "Compact thinking level",
+                            self._thinking_choices_with_manual("compact_thinking_level"),
                             "'off' is cheapest but is the value most likely to be silently "
                             "dropped by a virtual model, which then reasons at ITS default.",
+                            extra=self._thinking_number_box("compact_thinking_level"),
                         )
                         yield from self._text_row(
                             "compact_max_tool_iters", "Compact tool rounds",
@@ -1981,6 +2056,9 @@ class SettingsBody(Widget):
                 except ValueError as exc:
                     raise ValueError(f"subagent_route_override: {exc}") from exc
                 out.subagent_route_override = route
+                continue
+            if name in settings_mod.THINKING_FIELDS and isinstance(widget, Select):
+                setattr(out, name, self._thinking_value(name, widget.value))
                 continue
             if isinstance(widget, Switch):
                 setattr(out, name, bool(widget.value))

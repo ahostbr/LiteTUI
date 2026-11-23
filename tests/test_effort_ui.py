@@ -297,6 +297,107 @@ async def test_pilot_think_picker_number_row_asks_refuses_then_sets():
         assert "think:0.1 (as minimal)" in a.sub_title
 
 
+async def _open_settings_at_thinking(a, pilot):
+    from textual.widgets import Input
+
+    from litetui.settings_screen import SettingsBody, SettingsScreen
+
+    a.push_screen(SettingsScreen(a.settings))
+    await pilot.pause()
+    body = a.screen.query_one(SettingsBody)
+    body.query_one("#set-search", Input).value = "Thinking level"
+    await pilot.pause()
+    await pilot.pause()
+    return body
+
+
+@pytest.mark.asyncio
+async def test_pilot_settings_manual_number_saves_refuses_and_save_still_works():
+    """Prefix 5c1db80f 1b: Settings takes a number for Thinking level through the /think rule; an
+    invalid one is a named error and Save keeps working once it is fixed."""
+    from textual.widgets import Input, Select, Static
+
+    from litetui.settings_screen import MANUAL_THINKING, SettingsScreen
+
+    a = _real_app(_inkling(True))               # a server that carries a number (llama.cpp's shape)
+    a.settings.thinking_level = "high"
+    async with a.run_test(size=(130, 46)) as pilot:
+        body = await _open_settings_at_thinking(a, pilot)
+        select = body.query_one("#f-thinking_level", Select)
+        box = body.query_one("#f-thinking_level-number", Input)
+        assert ("manual number…", MANUAL_THINKING) in [(str(p), v) for p, v in select._options]
+        assert box.display is False, "the box shows only for a manual number"
+        select.value = MANUAL_THINKING
+        await pilot.pause()
+        assert box.display is True
+
+        box.value = "1.5"                       # outside Inkling's 0..0.99
+        body.action_save()
+        await pilot.pause()
+        assert isinstance(a.screen, SettingsScreen), "a refused number does not save"
+        error = str(body.query_one("#set-error", Static).render())
+        assert "thinking_level: 1.5 not set: 1.5 is outside this model's scale (0 to 0.99)" in error
+        if shots := _shots():
+            a.save_screenshot(filename="settings_manual_number_refused.svg", path=str(shots))
+
+        box.value = "0.1"
+        assert body._collect().thinking_level == 0.1, "Save works again once the number is fixed"
+        box.value = "abc"
+        with pytest.raises(ValueError, match="thinking_level: abc is not a reasoning number"):
+            body._collect()
+        select.value = "low"                    # a preset wins over a stale box
+        await pilot.pause()
+        assert box.display is False and body._collect().thinking_level == "low"
+
+
+@pytest.mark.asyncio
+async def test_pilot_settings_stored_number_shows_as_manual_and_never_blocks_save():
+    """A number saved under a model that maps numbers, opened on a backend with no scale (Strata,
+    LM Studio): shown as "manual · 0.1 (not sent)", kept as is on Save; a NEW number is refused."""
+    from textual.widgets import Input, Select
+
+    class Strata:
+        name, label = "strata", "Strata"
+
+        def reasoning_levels(self, model=None):
+            return ["none", "low", "medium", "high"]
+
+    a = owned_app()
+    a._connect = lambda: None
+    a.convo_dir = None
+    a.skills = []
+    a.backend = Strata()
+    a.model_id = "qwen"
+    a.settings.thinking_level = 0.1
+    async with a.run_test(size=(130, 46)) as pilot:
+        body = await _open_settings_at_thinking(a, pilot)
+        select = body.query_one("#f-thinking_level", Select)
+        box = body.query_one("#f-thinking_level-number", Input)
+        assert select.value == 0.1 and "manual · 0.1 (not sent)" in [str(p) for p, _ in select._options]
+        assert box.display is True and box.value == "0.1"
+        if shots := _shots():
+            a.save_screenshot(filename="settings_manual_number_stored.svg", path=str(shots))
+        assert body._collect().thinking_level == 0.1, "an unchanged stored number must not block Save"
+        box.value = "0.2"
+        with pytest.raises(ValueError, match="thinking_level: 0.2 not set: Strata takes level names only"):
+            body._collect()
+
+
+@pytest.mark.asyncio
+async def test_pilot_settings_manual_number_shown_where_numbers_travel():
+    from textual.widgets import Input, Select
+
+    a = _real_app(_inkling(True))
+    a.settings.thinking_level = 0.1
+    async with a.run_test(size=(130, 46)) as pilot:
+        body = await _open_settings_at_thinking(a, pilot)
+        select = body.query_one("#f-thinking_level", Select)
+        assert "manual · 0.1" in [str(p) for p, _ in select._options]
+        assert body.query_one("#f-thinking_level-number", Input).value == "0.1"
+        if shots := _shots():
+            a.save_screenshot(filename="settings_manual_number_llama.svg", path=str(shots))
+
+
 @pytest.mark.asyncio
 async def test_pilot_settings_thinking_select_shows_the_numbers():
     from textual.widgets import Input, Select
