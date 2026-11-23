@@ -505,3 +505,14 @@ def test_an_mcp_server_url_in_a_blocked_range_is_refused_at_connect(_isolated):
         with pytest.raises(mcp_client.MCPError, match="egress blocked"):
             srv.start()
     assert [json.loads(ln)["via"] for ln in _isolated.log.read_text(encoding="utf-8").splitlines()] == ["mcp-connect"] * 3
+
+def test_interval_edges_are_exact_for_every_family():
+    cn = DATA.sets[0]
+    p = policy()
+    for fam, (starts, ends, _lens), mk in (("v4", cn.v4, ipaddress.IPv4Address), ("v6", cn.v6, ipaddress.IPv6Address)):
+        for i in (0, len(starts) // 2, len(starts) - 1):
+            first, last = mk(starts[i]), mk(ends[i])
+            assert cn.find(first) and cn.find(last) and cn.find(first) == cn.find(last), (fam, i)
+            assert p.check_ip(str(first)).blocked and p.check_ip(str(last)).blocked, (fam, i)
+            assert cn.find(mk(ends[i] + 1)) != cn.find(last), (fam, i, "the address after a block is not in that block")
+            assert starts[i] == 0 or cn.find(mk(starts[i] - 1)) != cn.find(first), (fam, i)
