@@ -6,7 +6,7 @@ that tests replace, so nothing here needs the network to be tested.
 
 Sources:
 * APNIC `delegated-apnic-latest`, rows `apnic|CN|ipv4|ipv6` (country code CN only:
-  Hong Kong, Macau and Taiwan are separate codes and are NOT included, Ryan 2026-11-23).
+  Hong Kong, Macau and Taiwan are separate codes and are NOT included, the user, 2026-11-23).
 * RIPEstat `announced-prefixes` for the Chinese clouds' ASNs, each ASN's holder
   name re-checked with `as-overview` before it is kept (AS34947 is a travel
   company that merely shares the word "Alibaba": it is not on the list).

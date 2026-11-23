@@ -20,7 +20,7 @@ Design points that each have a test:
 * Hostname rules match by suffix at any depth, case-insensitively, tolerating a
   trailing dot, fullwidth dots and IDNA.
 
-Model backends are NOT in scope (Ryan 2026-11-23): nothing here is called from a
+Model backends are NOT in scope (the user, 2026-11-23): nothing here is called from a
 backend path.
 """
 from __future__ import annotations

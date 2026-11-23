@@ -7,7 +7,7 @@ same `egress_policy`, and connects to the address it checked.
 
 Covers what honours the proxy variables (curl, pwsh 7 Invoke-WebRequest, git, pip, npm,
 python requests, hf, most CLIs). It does NOT cover a program that ignores them or opens a
-raw socket: only the generated firewall script (a file Ryan runs himself) does.
+raw socket: only the generated firewall script (a file the user runs themselves) does.
 """
 from __future__ import annotations
 

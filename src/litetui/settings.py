@@ -605,7 +605,7 @@ class Settings:
 
     # ── Network egress block for TOOL paths (egress_policy.py, T1418) ────────
     #: Refuse, in words and with a log line, any tool call whose network target is in China
-    #: (APNIC country code CN), a Chinese cloud's range, or a listed domain. DEFAULT ON (Ryan
+    #: (APNIC country code CN), a Chinese cloud's range, or a listed domain. DEFAULT ON (the user,
     #: 2026-11-23: "make the entire range blocked in litetui"). Tool paths only: model
     #: backends are out of scope and never consult it. DEVICE scope: one machine, one policy.
     egress_block_enabled: bool = True

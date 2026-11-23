@@ -8,7 +8,7 @@ words and the log line:
 * `refusal` / `record`    : the sentence the model reads and the `logs/egress.jsonl` line.
 * `proxy_env`   : the loopback proxy's environment for the shell tools' children.
 
-TOOL PATHS ONLY. Model backends never call anything here (Ryan 2026-11-23).
+TOOL PATHS ONLY. Model backends never call anything here (the user, 2026-11-23).
 """
 from __future__ import annotations
 
