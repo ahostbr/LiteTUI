@@ -611,6 +611,13 @@ class HTTPMCPServer:
     def start(self) -> None:
         if not self.url:
             raise MCPError("no `url` in config")
+        # T1418: a server whose url is in a blocked range is never connected to. Checked at connect,
+        # in words; the MCP tools it would have offered are simply absent.
+        from litetui import egress_guard, egress_policy
+        verdict = egress_policy.current().check_url(self.url)
+        if verdict.blocked:
+            egress_guard.record(f"mcp:{self.name}", verdict, via="mcp-connect")
+            raise MCPError(f"egress blocked: {verdict.describe()} (Settings -> egress_allow to allow it)")
         # BEFORE any tool call can wait on it, like the stdio handshake: a dead
         # endpoint fails at BOOT (recorded by MCPManager), not first use.
         self._request(

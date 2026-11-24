@@ -1638,6 +1638,28 @@ class SettingsBody(Widget):
                             "earlier in the same conversation still reaches the host.",
                             placeholder="none — every registered tool is offered",
                         )
+                        yield self._section_header("agent-egress")
+                        yield from self._switch_row(
+                            "egress_block_enabled", "Block China from tools",
+                            "ON (default): a tool call, shell command or web fetch that reaches "
+                            "China (every APNIC block delegated to CN), a Chinese cloud's ranges "
+                            "or a listed domain is refused in words and logged to "
+                            "logs/egress.jsonl. Shell commands also run through a loopback "
+                            "filtering proxy. Model backends are not affected. `/egress status` "
+                            "shows the data and its date.",
+                        )
+                        yield from self._text_row(
+                            "egress_extra_blocked", "Also block",
+                            "Comma separated hosts, domains, IP addresses or CIDRs to refuse "
+                            "on top of the built-in lists.",
+                            placeholder="none",
+                        )
+                        yield from self._text_row(
+                            "egress_allow", "Exceptions to the block",
+                            "Comma separated: a host, .domain or CIDR, optionally 'host # why' "
+                            "(no commas in the why). An exception beats every block rule.",
+                            placeholder="none",
+                        )
                         yield self._section_header("agent-context")
                         yield from self._select_row(
                             "tool_context_mode", "Tool output context", TOOL_CONTEXT_CHOICES,

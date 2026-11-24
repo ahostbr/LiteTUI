@@ -26,7 +26,8 @@ from litetui.textfmt import (
 
 def _render_all():
     return {
-        k: tool_denied(k, name="shell", reason="a stated reason")
+        k: tool_denied(k, name="shell", reason="a stated reason",
+                       target="x.example", rule="a stated rule", data="a stated data source")
         for k in TOOL_DENIED_REQUIRED
     }
 

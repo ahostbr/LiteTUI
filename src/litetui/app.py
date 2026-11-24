@@ -117,6 +117,7 @@ from litetui import appsvc
 from litetui import scheduler as sched_mod
 from litetui import tool_context
 from litetui import seat_authority, tool_policy
+from litetui import egress_guard, egress_policy
 from litetui.turn_engine import (TurnEngine, side_call_reasoning_effort, unusable_tool_call_result,
                                  with_valid_tool_arguments)
 from litetui import thinking_probe
@@ -1992,6 +1993,14 @@ class LiteTUI(App):
         self.plugins.tools_disabled = lambda: frozenset(
             self.settings.tools_disabled or ()
         )
+        # T1418: the egress policy reads its settings LIVE, like tools_disabled above. With no
+        # provider installed the block is ON, and `is not False` keeps a null in a hand-edited
+        # settings.json from switching it off.
+        egress_policy.configure(lambda: egress_policy.Settings(
+            enabled=self.settings.egress_block_enabled is not False,
+            extra=tuple(self.settings.egress_extra_blocked or ()),
+            allow=tuple(self.settings.egress_allow or ()),
+        ))
         self._plugin_manifests = plugins_mod.register_plugins(
             self, self.plugins,
             disabled=frozenset(self.settings.plugins_disabled or ()),
@@ -3568,6 +3577,14 @@ class LiteTUI(App):
         policy = self.plugins.policy_for(name)
         if policy is None:
             return tool_denied("no-metadata", app=self, name=name), False
+        # T1418: THE EGRESS SCAN. This is the one door every tool call passes (typed turns, inbox,
+        # cron, Codex and Claude bridges, GUI RPC), so a network target in ANY string argument of a
+        # network- or process-capable tool is refused here, in words, before the approval prompt
+        # and before any side effect. Off the event loop: it may resolve names.
+        if egress_guard.scan_applies(policy) and (
+            egress_refusal := await asyncio.to_thread(egress_guard.scan_call, name, args, policy, app=self)
+        ):
+            return egress_refusal, False
         if name == "write" and isinstance(args.get("path"), str) and args["path"]:
             # Bind policy and execution to the same cwd-based target, even if cwd changes while approving.
             from litetui.plugins.core_tools import _resolve_path

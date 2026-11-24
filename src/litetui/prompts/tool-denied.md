@@ -67,6 +67,18 @@ Only the user can turn them on: Ctrl+T, or Settings -> Agent loop -> Tools
 enabled. Tell them that in plain language, then answer as best you can without
 tools. Do not retry and do not try another tool.
 
+## egress-blocked
+<!-- placeholders: {name}, {target}, {rule}, {data}. T1418: a tool call whose network
+     target is on the egress blocklist (China per APNIC, Chinese clouds, listed domains). -->
+
+[egress blocked] {name}: {target} is on the user's egress blocklist ({rule};
+data: {data}). Nothing ran and nothing changed. This is a setting, not a fault.
+Do not retry this call, and do not route around it: another tool, a proxy, a
+mirror or a different spelling of the same address would defeat what the user
+asked for. Only the user can allow a host (Settings -> egress_allow; `/egress
+status` shows the rule and its data). Say plainly that the target is blocked and
+carry on with what you can still do.
+
 ## no-host
 
 <!-- T577. A headless child asked its host to approve a tool call and nothing

@@ -18,7 +18,7 @@ from functools import partial
 from html.parser import HTMLParser
 from pathlib import Path
 
-from litetui import file_state, harness
+from litetui import egress_guard, egress_policy, file_state, harness
 from litetui import ttyguard
 from litetui import tasks as tasks_mod
 from litetui.fmt import fmt_dur
@@ -242,7 +242,8 @@ def _run_shell(argv, *, shell: bool, timeout: int, agent_id: str | None = None) 
             shell=shell,
             stdin=subprocess.DEVNULL,
             cwd=str(Path.cwd()),
-            env=harness.tool_process_env(agent_id),
+            # T1418: the child's network goes through the loopback filtering proxy.
+            env=egress_guard.proxy_env(harness.tool_process_env(agent_id)),
             # The ONLY caller that opts in. See ttyguard.popen's docstring for
             # why the other three must not.
             kill_on_close=True,
@@ -456,9 +457,14 @@ def tool_web_fetch(args: dict) -> str:
         req = urllib.request.Request(
             url, headers={"User-Agent": "Mozilla/5.0 (compatible; LiteTUI)"}
         )
-        with urllib.request.urlopen(req, timeout=WEB_FETCH_TIMEOUT_S) as r:
+        # T1418: the host is resolved and checked ONCE, the connection goes to the address that
+        # was checked, and every redirect hop is checked again. Never a bare `urlopen`.
+        with egress_guard.open_checked(req, WEB_FETCH_TIMEOUT_S) as r:
             ctype = (r.headers.get("Content-Type") or "").lower()
             data = r.read(512 * 1024)
+    except egress_policy.EgressBlocked as blocked:
+        egress_guard.record("web_fetch", blocked.verdict, via="web_fetch")
+        return egress_guard.refusal("web_fetch", blocked.verdict)
     except Exception as e:
         return f"[error] fetch failed: {type(e).__name__}: {e}"
     text = data.decode("utf-8", errors="replace")
