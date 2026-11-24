@@ -491,3 +491,47 @@ def test_a_saved_recipe_speed_preset_still_means_flags_as_written(tmp_path):
     args = ["--expert-residency", "disk", "--expert-host-mib", "46080", "--prefill-chunk", "4096"]
     out, note = eng.apply_speed_preset(args, saved, free_ram_gib=200)
     assert out == args and "as written" in note
+
+
+# ── LOOPKV-466: the loop-KV default also rides a model defaults start (every Inkling artifact has one) ──
+
+INKLING_DIR = {"components": {"text": {"config": {"model_type": "inkling2"}}, "vision": {}}}
+
+
+def _inkling_defaults(tmp_path, args):
+    exe = tmp_path / "configured" / "ninfer-serve.exe"
+    exe.parent.mkdir()
+    exe.write_bytes(b"MZ")
+    art = _artifact(tmp_path / "g" / "Inkling.ninfer", INKLING_DIR)
+    s = _Settings()
+    s.ninfer_artifact = str(art)
+    s.ninfer_executable = str(exe)
+    eng.model_defaults_path(art).write_text(json.dumps({
+        "version": 1, "modelId": "inkling-2-mini", "maxContext": 150000, "args": args}), encoding="utf-8")
+    return s
+
+
+def test_an_inkling_model_defaults_start_gets_loop_kv_last_full_after_its_own_flags(tmp_path):
+    s = _inkling_defaults(tmp_path, ["--vision", "--preserve-thinking"])
+    cmd = _start_with(s, _help("--vision", "--loop-kv"))
+    assert cmd[-4:] == ["--vision", "--preserve-thinking", "--loop-kv", "last-full"]
+    assert cmd.count("--loop-kv") == 1
+
+
+def test_a_model_defaults_file_that_sets_loop_kv_is_not_overridden(tmp_path):
+    s = _inkling_defaults(tmp_path, ["--vision", "--loop-kv", "last-all"])
+    cmd = _start_with(s, _help("--vision", "--loop-kv"))
+    assert cmd.count("--loop-kv") == 1 and cmd[cmd.index("--loop-kv") + 1] == "last-all"
+
+
+def test_an_inkling_model_defaults_start_on_an_engine_without_the_flag_is_unchanged(tmp_path):
+    s = _inkling_defaults(tmp_path, ["--vision"])
+    assert "--loop-kv" not in _start_with(s, _help("--vision"))
+    assert "--loop-kv" not in _start_with(s, _no_help)
+
+
+def test_a_non_inkling_model_defaults_start_is_unchanged_by_the_loop_kv_default(tmp_path):
+    s, art, exe = _setup(tmp_path)                              # DeepSeek: no model_type in its header
+    body = _defaults(art, exe)
+    cmd = _start_with(s, _help("--loop-kv", "--spec"))
+    assert "--loop-kv" not in cmd and cmd[-len(body["args"]):] == body["args"]

@@ -104,6 +104,16 @@ NINFER_FAMILY_MAX_CONCURRENCY = {
     "inkling2": (1, "it keeps its drafter (on only when serving one request at a time) and a single sequence's KV"),
 }
 
+#: LOOPKV-466 (Ryan 2026-11-24: "make it the default going forward. No other fallbacks. It should be on."):
+#: the families whose start carries `--loop-kv MODE` by default. NInfer refuses the flag for every other
+#: family (it is Inkling 2's looped core: the earlier passes read the last pass's KV), so only they are
+#: listed. Measured 2026-11-24, Inkling 2 Mini Uncensored Q4_K_M, 150K: last-full loads 1,124 MiB lower,
+#: 420K fits with 4.5 GiB free (per-pass 1.0 GiB); the long-prompt retrieval answer was the same file.
+#: It is lossy (greedy answers differ from per-pass in wording), which is why the engine ships it off.
+NINFER_FAMILY_LOOP_KV = {
+    "inkling2": "last-full",
+}
+
 #: The engine's own words (ninfer-args.ts:184/195). A failure line ends the wait
 #: NOW rather than at the timeout.
 NINFER_READY_MARKER = "listening on http://"
@@ -621,6 +631,20 @@ def build_ninfer_args(
     if vision and "vision" in components:
         args.append("--vision")
     return args
+
+
+def loop_kv_args(args, family: str | None, supported) -> list[str]:
+    """`["--loop-kv", MODE]` when a start of `family` should carry it, else [].
+
+    The flag is added only for a family in NINFER_FAMILY_LOOP_KV, only when `supported` (the engine's
+    `--help` options, engine_flags) lists it, and never when `args` already name `--loop-kv`: a model
+    defaults file that sets it (or sets another mode) is the more specific word and is not fought.
+    An engine without the flag simply is not asked for it; that is the engine lacking the option, not
+    a second mode."""
+    mode = NINFER_FAMILY_LOOP_KV.get(family or "")
+    if mode is None or "--loop-kv" in args or "--loop-kv" not in supported:
+        return []
+    return ["--loop-kv", mode]
 
 
 def concurrency_in(args) -> int:
@@ -1220,6 +1244,15 @@ def start(settings, *, healthy, spawn=ttyguard.popen, notice=None, progress=None
             model_type=family,
             fast_prefill_kernel=fast_prefill,
         )
+    # LOOPKV-466: Inkling 2 starts with the shared loop KV on, on either path above. Asked only for a
+    # family that takes it; the engine's --help decides whether this build has the option.
+    loop_family = artifact_model_type(directory)
+    if loop_family in NINFER_FAMILY_LOOP_KV and "--loop-kv" not in args:
+        extra = loop_kv_args(args, loop_family, engine_flags(exe, run=help_run))
+        if extra:
+            args += extra
+        else:
+            _log_event(f"--loop-kv left out: {exe} its --help does not list it (or could not be read)")
     lp = log_path()
     lp.parent.mkdir(parents=True, exist_ok=True)
     log_file = open(lp, "a", encoding="utf-8", errors="replace")  # noqa: SIM115 - the process writes here for its whole life

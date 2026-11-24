@@ -821,3 +821,63 @@ def test_terminate_owned_is_busy_when_a_cleanup_for_this_engine_is_in_flight(tmp
         assert r.retained and r.error == "cleanup_in_progress"
     finally:
         owned._cleanup_lock.release()
+
+
+# ── LOOPKV-466: Inkling 2 starts with --loop-kv last-full, gated on the engine's own --help ──
+#
+# Ryan 2026-11-24: "make it the default going forward. No other fallbacks. It should be on."
+
+HELP_LOOP_KV = HELP_NEW + "  --loop-kv MODE                Inkling 2: the looped core's earlier passes on the last pass's KV\n"
+
+
+def _loop_kv_value(cmd):
+    return cmd[cmd.index("--loop-kv") + 1] if "--loop-kv" in cmd else None
+
+
+def test_loop_kv_args_is_inkling_only_and_needs_the_flag_in_the_engines_help():
+    supported = frozenset({"--kv-dtype", "--loop-kv"})
+    assert eng.loop_kv_args(["a"], "inkling2", supported) == ["--loop-kv", "last-full"]
+    assert eng.loop_kv_args(["a"], "inkling2", frozenset({"--kv-dtype"})) == []          # an engine without the option
+    assert eng.loop_kv_args(["a"], "inkling2", frozenset()) == []                        # help unreadable
+    for other in ("qwen3_5_text", "deepseek_v41", "gemma4", "flint", None):
+        assert eng.loop_kv_args(["a"], other, supported) == []                           # NInfer refuses it for them
+
+
+def test_loop_kv_args_does_not_fight_an_argv_that_already_names_the_flag():
+    supported = frozenset({"--loop-kv"})
+    assert eng.loop_kv_args(["a", "--loop-kv", "last-all"], "inkling2", supported) == []
+    assert eng.loop_kv_args(["a", "--loop-kv", "per-pass"], "inkling2", supported) == []
+
+
+def test_an_inkling_start_carries_loop_kv_last_full_when_the_engine_lists_it(tmp_path, monkeypatch):
+    s, spawn, spawned = _ready_engine(tmp_path, monkeypatch, log_text="listening on http://127.0.0.1:49260\n")
+    monkeypatch.setattr(eng, "read_artifact_directory", lambda p: _with_text_config("inkling2"))
+    owned = eng.start(s, healthy=lambda h: False, spawn=spawn, help_run=_help_runner(HELP_LOOP_KV)[0])
+    assert _loop_kv_value(spawned["cmd"]) == "last-full" and spawned["cmd"].count("--loop-kv") == 1
+    assert owned.args[-2:] == ("--loop-kv", "last-full")        # what the process table will show
+    assert "--loop-kv last-full" in eng.log_path().read_text(encoding="utf-8")
+    eng.stop(owned)
+
+
+def test_an_inkling_start_on_an_engine_without_the_flag_starts_without_it_and_logs_one_line(tmp_path, monkeypatch):
+    s, spawn, spawned = _ready_engine(tmp_path, monkeypatch, log_text="listening on http://127.0.0.1:49260\n")
+    monkeypatch.setattr(eng, "read_artifact_directory", lambda p: _with_text_config("inkling2"))
+    owned = eng.start(s, healthy=lambda h: False, spawn=spawn, help_run=_help_runner(HELP_NEW)[0])
+    assert "--loop-kv" not in spawned["cmd"]
+    assert eng.log_path().read_text(encoding="utf-8").count("--loop-kv left out") == 1
+    eng.stop(owned)
+    run = _help_runner(raises=subprocess.TimeoutExpired(["x"], 15))[0]
+    owned = eng.start(s, healthy=lambda h: False, spawn=spawn, help_run=run)
+    assert "--loop-kv" not in spawned["cmd"]
+    eng.stop(owned)
+
+
+def test_a_non_inkling_start_never_gets_loop_kv_and_never_asks_the_engine_for_it(tmp_path, monkeypatch):
+    s, spawn, spawned = _ready_engine(tmp_path, monkeypatch, log_text="listening on http://127.0.0.1:49260\n")
+    s.ninfer_fast_prefill_kernel = False                        # so no --help is asked for another reason
+    for family in ("qwen3_5_text", "deepseek_v41"):
+        monkeypatch.setattr(eng, "read_artifact_directory", lambda p, f=family: _with_text_config(f))
+        run, calls = _help_runner(HELP_LOOP_KV)
+        owned = eng.start(s, healthy=lambda h: False, spawn=spawn, help_run=run)
+        assert "--loop-kv" not in spawned["cmd"] and calls == []
+        eng.stop(owned)
