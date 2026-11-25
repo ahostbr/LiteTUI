@@ -375,3 +375,63 @@ def test_only_a_server_that_names_itself_basalt_is_one(monkeypatch):
     assert eng.probe("http://127.0.0.1:1")[::2] == ("foreign", "/health says service='strata'")
     answers["health"] = (200, {"status": "ok"})
     assert eng.probe("http://127.0.0.1:1")[::2] == ("foreign", "/health: 200, with no service name")
+
+
+# ── per-model limits: Inkling 2 Mini's engine takes fp16 or fp8 only and trains to 1M tokens ──────────
+
+def _pack_with_arch(path, arch):
+    """A `.basalt` file whose `meta` section names `arch` (Basalt's tools/model_file.py layout)."""
+    import struct
+    body = json.dumps({"format": "basalt", "version": 2, "arch": arch, "tensors": {}}).encode()
+    head = struct.pack("<8sIIQ40s", b"BASALTMF", 2, 1, (64 << 10) + len(body), b"")
+    head += struct.pack("<64sQQ32s16s", b"meta", 64 << 10, len(body), b"", b"")
+    path.write_bytes(head.ljust(64 << 10, b"\0") + body)
+
+
+def test_pack_arch_is_the_meta_sections_arch_and_none_for_anything_else(tmp_path):
+    _, (stub, other) = _install(tmp_path, "stub", "other")
+    _pack_with_arch(other, "inkling2")
+    assert eng.pack_arch(other) == "inkling2"
+    assert eng.pack_arch(stub) is None                                  # 8 bytes: the magic and nothing else
+    assert eng.pack_arch(tmp_path / "gone.basalt") is None
+    _write_pack(stub, ["dense", "meta"])                                # a meta entry of size 0
+    assert eng.pack_arch(stub) is None
+    _pack_with_arch(stub, "qwen4exp")
+    assert eng.pack_arch(stub) == "qwen4exp"
+
+
+def test_an_inkling_pack_gets_no_int8_kv_and_may_run_past_262k(tmp_path):
+    settings, (pack,) = _install(tmp_path, "Inkling-2-Mini-NVFP4-MX8")
+    _pack_with_arch(pack, "inkling2")
+    settings.basalt_max_context = 150000
+    assert "kv" not in eng.run_config(settings, pack, 8091)["models"][0]          # Basalt's own fp16: int8 stops this engine
+    settings.basalt_max_context = 420000
+    assert eng.run_config(settings, pack, 8091)["models"][0]["max-context"] == 420000
+    settings.basalt_max_context = 1048577
+    with pytest.raises(BackendError, match="past the model's trained 1048576"):
+        eng.run_config(settings, pack, 8091)
+    settings.basalt_max_context = 150000
+    settings.basalt_kv = "fp16"
+    assert eng.run_config(settings, pack, 8091)["models"][0]["kv"] == "fp16"
+    settings.basalt_kv = "int8"
+    with pytest.raises(BackendError, match="basalt_kv int8 is not an option for inkling2.*fp16 or fp8"):
+        eng.run_config(settings, pack, 8091)
+
+
+def test_another_architecture_keeps_litetuis_int8_default_and_its_262k_ceiling(tmp_path):
+    settings, (pack,) = _install(tmp_path, "Qwen3.8-FN-IQ3_S")
+    _pack_with_arch(pack, "qwen4exp")
+    settings.basalt_max_context = 150000
+    assert eng.run_config(settings, pack, 8091)["models"][0]["kv"] == "int8"
+    settings.basalt_max_context = 262145
+    with pytest.raises(BackendError, match="past the model's trained 262144"):
+        eng.run_config(settings, pack, 8091)
+
+
+def test_has_inkling_pack_looks_at_every_listed_pack(tmp_path):
+    settings, (a, b) = _install(tmp_path, "a", "b")
+    _pack_with_arch(a, "qwen4exp")
+    assert not eng.has_inkling_pack(settings)
+    _pack_with_arch(b, "inkling2")
+    assert eng.has_inkling_pack(settings)
+

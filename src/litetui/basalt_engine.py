@@ -54,6 +54,13 @@ BASALT_DEFAULT_PORT = 8091
 BASALT_TRAINED_CONTEXT = 262144
 #: Basalt's own default is 8,192 tokens; an agent session needs more. Used when nothing is set.
 BASALT_DEFAULT_CONTEXT = 131072
+#: Where a model's own limits differ from the Flash-Next numbers above, by the architecture its
+#: pack names (the `arch` of the pack's `meta` section). Inkling 2 Mini trains to 1,048,576 tokens
+#: and its engine takes only `--kv fp16|fp8` (src/models/inkling2/adapter.cpp), so the `int8`
+#: LiteTUI picks for a long context on the other models would stop it at start.
+INKLING_ARCH = "inkling2"
+ARCH_TRAINED_CONTEXT = {INKLING_ARCH: 1048576}
+ARCH_KV_CHOICES = {INKLING_ARCH: ("fp16", "fp8")}
 #: Folders of an install that hold packs.
 PACK_DIRS = ("packs", "models")
 #: The CUDA 13 runtime the engine links (docs/platforms.md: "on the library path").
@@ -201,6 +208,44 @@ def pack_sections(pack) -> list[str]:
         return []
 
 
+_ARCH_CACHE: dict = {}
+_META_LIMIT = 256 << 20
+
+
+def pack_arch(pack) -> str | None:
+    """The architecture a pack names (`arch` in its `meta` section), or None for a file that is
+    missing, unreadable, not a pack or names none. Cached per file version: `meta` lists every
+    tensor, so it is read once, and this only ever picks per-model limits."""
+    try:
+        st = os.stat(pack)
+        key = (str(pack), st.st_mtime_ns, st.st_size)
+        if key in _ARCH_CACHE:
+            return _ARCH_CACHE[key]
+        arch = None
+        with open(pack, "rb") as fh:
+            head = fh.read(_PACK_HEADER_BYTES)
+            magic, _version, count, _size, _pad = _PACK_HEADER.unpack_from(head, 0)
+            if magic == _PACK_MAGIC:
+                for i in range(count):
+                    raw, off, size, _digest, _x = _PACK_ENTRY.unpack_from(head, _PACK_HEADER.size + i * _PACK_ENTRY.size)
+                    if raw.rstrip(b"\0") == b"meta" and 0 < size <= _META_LIMIT:
+                        fh.seek(off)
+                        found = json.loads(fh.read(size)).get("arch")
+                        arch = found if isinstance(found, str) else None
+                        break
+        _ARCH_CACHE[key] = arch
+        return arch
+    except (OSError, struct.error, ValueError, AttributeError):
+        return None
+
+
+def has_inkling_pack(settings) -> bool:
+    """Does Basalt hold an Inkling 2 Mini pack? Then Basalt is the Inkling engine and `/model`
+    lists no other engine's Inkling files (Ryan, 2026-11-24: "i also dont want 50x inkling options
+    when i do slash model anymore ... just the one")."""
+    return any(pack_arch(p) == INKLING_ARCH for p in list_packs(settings))
+
+
 def pack_has_vision(pack) -> bool:
     """Does the pack carry its image projector (the mmproj given to the converter)?"""
     return VISION_SECTION in pack_sections(pack)
@@ -269,15 +314,22 @@ def run_config(settings, pack: Path, port: int) -> dict:
     except ValueError as exc:
         raise BackendError(f"{exc}; nothing was started.") from exc
     context = context_for(settings)
-    if context > BASALT_TRAINED_CONTEXT:
+    arch = pack_arch(pack)
+    trained = ARCH_TRAINED_CONTEXT.get(arch, BASALT_TRAINED_CONTEXT)
+    if context > trained:
         raise BackendError(
-            f"basalt_max_context {context} is past the model's trained {BASALT_TRAINED_CONTEXT} tokens — "
+            f"basalt_max_context {context} is past the model's trained {trained} tokens — "
             "that needs RoPE scaling, which LiteTUI does not set for Basalt; nothing was started.")
     model: dict = {"model": str(pack), "alias": model_name(pack), "max-context": context}
     kv = getattr(settings, "basalt_kv", None)
+    kv_choices = ARCH_KV_CHOICES.get(arch)
+    if kv and kv_choices and kv not in kv_choices:
+        raise BackendError(
+            f"basalt_kv {kv} is not an option for {arch}: its engine takes {' or '.join(kv_choices)} "
+            "(Settings > Basalt > KV cache); nothing was started.")
     if kv:
         model["kv"] = kv
-    elif context > 8192:
+    elif context > 8192 and not kv_choices:
         # As strata_engine.with_context: past 8,192 tokens a 16-bit KV cache takes the VRAM the
         # expert cache needs. Basalt's default is fp16.
         model["kv"] = "int8"

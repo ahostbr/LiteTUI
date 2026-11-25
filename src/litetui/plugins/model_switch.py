@@ -137,11 +137,19 @@ backend_hint = llm_backend.backend_hint
 
 
 def _ninfer_artifact_rows(app) -> list[tuple[str, str]]:
-    from litetui.ninfer_engine import in_default_artifacts_dir, list_ninfer_artifacts, model_defaults_path
+    from litetui import basalt_engine
+    from litetui.ninfer_engine import (
+        artifact_model_type, in_default_artifacts_dir, list_ninfer_artifacts, model_defaults_path,
+        read_artifact_directory)
 
     chosen = str(getattr(app.settings, "ninfer_artifact", "") or "").strip()
     rows = []
+    # Ryan 2026-11-24: Inkling has one entry in /model, the Basalt pack. While Basalt holds one, NInfer's
+    # Inkling artifacts are not offered (no file is touched; ninfer_artifact still starts one that is set).
+    basalt_is_inkling = basalt_engine.has_inkling_pack(app.settings)
     for path in list_ninfer_artifacts():
+        if basalt_is_inkling and artifact_model_type(read_artifact_directory(path)) == basalt_engine.INKLING_ARCH:
+            continue
         mark = "  · current" if chosen and Path(chosen) == path else ""
         size = ""
         try:

@@ -535,3 +535,43 @@ def test_a_non_inkling_model_defaults_start_is_unchanged_by_the_loop_kv_default(
     body = _defaults(art, exe)
     cmd = _start_with(s, _help("--loop-kv", "--spec"))
     assert "--loop-kv" not in cmd and cmd[-len(body["args"]):] == body["args"]
+
+
+# ── /model offers one Inkling: the Basalt pack (Ryan 2026-11-24) ─────────────────────────────────────────
+
+def _basalt_inkling_pack(tmp_path):
+    root = tmp_path / "llm" / "basalt"
+    (root / "packs").mkdir(parents=True)
+    body = json.dumps({"arch": "inkling2"}).encode()
+    head = struct.pack("<8sIIQ40s", b"BASALTMF", 2, 1, (64 << 10) + len(body), b"")
+    head += struct.pack("<64sQQ32s16s", b"meta", 64 << 10, len(body), b"", b"")
+    (root / "packs" / "Inkling-2-Mini-NVFP4-MX8.basalt").write_bytes(head.ljust(64 << 10, b"\0") + body)
+
+
+def _picker_app(tmp_path):
+    default = _default_dir(tmp_path)
+    _artifact(default / "Inkling-NInfer.ninfer", INKLING_DIR)
+    _artifact(default / "Qwen.ninfer", {"components": {"text": {"config": {"model_type": "qwen3_5_text"}}}})
+    (default / "Inkling-NInfer.ninfer.launch.json").write_text("{}", encoding="utf-8")
+
+    class App:
+        settings = type("S", (), {"ninfer_artifact": ""})()
+
+    return App()
+
+
+def test_ninfers_inkling_artifacts_are_not_offered_while_basalt_holds_an_inkling_pack(tmp_path):
+    app = _picker_app(tmp_path)
+    assert {Path(k).name for k, _ in model_switch._ninfer_artifact_rows(app)} == {"Inkling-NInfer.ninfer", "Qwen.ninfer"}
+    _basalt_inkling_pack(tmp_path)
+    assert {Path(k).name for k, _ in model_switch._ninfer_artifact_rows(app)} == {"Qwen.ninfer"}
+
+
+def test_a_chosen_inkling_artifact_still_lists_nothing_extra_and_nothing_is_deleted(tmp_path):
+    app = _picker_app(tmp_path)
+    _basalt_inkling_pack(tmp_path)
+    app.settings = type("S", (), {"ninfer_artifact": str(_default_dir(tmp_path) / "Inkling-NInfer.ninfer")})()
+    model_switch._ninfer_artifact_rows(app)
+    assert (_default_dir(tmp_path) / "Inkling-NInfer.ninfer").is_file()
+    assert (_default_dir(tmp_path) / "Inkling-NInfer.ninfer.launch.json").is_file()
+
