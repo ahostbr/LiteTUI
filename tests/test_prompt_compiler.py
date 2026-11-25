@@ -71,3 +71,15 @@ def test_composed_prompt_contains_no_unresolved_root_placeholder(
         assert f"{paths.ROOT}" in composed
     finally:
         session.release()
+
+
+def test_base_prompt_tells_every_run_to_show_media_through_litesuite() -> None:
+    """The user 2026-11-25: LiteSuite running = all media is shown through it. A run that was not told
+    sometimes handed over a file path; the rule lives in the always-loaded base prompt, not in a skill."""
+    packaged = Path(paths.__file__).parent / "prompts" / "systemprompt.md"
+    from litetui.prompt_compiler import compile_prompt_file
+    text = compile_prompt_file(packaged, root=paths.ROOT, user_name="").strip()
+    assert "Showing the user media" in text
+    assert "action=media" in text and "lst run ask action=media" in text
+    assert "A bare file path in your reply is not" in text
+    assert "Only when LiteSuite is not running, give the path." in text
