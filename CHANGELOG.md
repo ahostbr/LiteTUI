@@ -18,6 +18,24 @@ fails if this file's top released heading disagrees with it.
 
 ## [Unreleased]
 
+## [0.32.0] - 2026-11-26
+
+Thinking levels that follow each model's own scale and take a number, an outbound blocklist for tool paths, and Inkling 2 Mini as a Basalt model. Nothing here has been checked end to end by the maintainer.
+
+### Added
+- **Thinking levels come from the model's own chat template.** `/think`, the header and Settings list the levels the loaded model accepts and show the number each one sends, for example `high · 0.9` on Inkling 2 Mini. This works on NInfer, llama.cpp and Basalt. A level saved under another model lands on the nearest level this model has, and the header says so.
+- **A thinking level can be a number.** `/think 0.5`, the "number…" row in the `/think` picker, the Settings thinking boxes and the per-model override all take one, checked by one rule that says why a number is refused. llama.cpp sends the number as it is; Basalt sends Inkling's as a whole count of hundredths (0.5 goes out as 50); NInfer takes the numbers its template names.
+- **An outbound blocklist for tool paths, on by default.** `web_fetch`, MCP server URLs and shell tools refuse addresses in mainland China and the listed Chinese cloud ranges and domains. `/egress` shows the status, tests an address and refreshes the lists; the `egress_allow` setting makes exceptions. Model backends are not affected. Programs that ignore proxy settings are not covered; a firewall script is included for you to read and run yourself.
+- **Inkling 2 Mini runs on Basalt.** A Basalt pack is started with the limits its own architecture takes (KV type, context ceiling), and while Basalt holds an Inkling pack `/model` lists that one entry instead of every NInfer Inkling file.
+- **NInfer starts Inkling 2 with `--loop-kv last-full`** when the engine lists the option in its `--help`, which lowers VRAM use at long contexts.
+- **The base system prompt tells a run to show media through LiteSuite** when LiteSuite is running.
+
+### Fixed
+- **`high` on Inkling sends `high` (0.9)** on NInfer. It used to be sent as `xhigh` (0.99).
+- **`minimal` reaches Inkling on Basalt as 0.1.** It used to be sent as `low` (0.2).
+- **Thinking `off` reaches Inkling's template on every engine**, including llama.cpp, where it was dropped and the model thought at its default.
+- **A compaction keeps the chat turn's thinking level in the same place in the request**, so the engine's prompt cache is kept.
+
 ## [0.31.0] - 2026-11-21
 
 Faster prefill on NInfer by default, model defaults that need no engine path, Basalt as a managed engine, a context guard, and approval dialogs that keep their buttons on screen. Nothing here has been checked end to end by the maintainer.
