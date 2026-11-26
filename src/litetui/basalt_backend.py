@@ -15,10 +15,14 @@ a model is one `.basalt` file and LiteTUI writes the run config), how the server
 from __future__ import annotations
 
 from . import basalt_engine
+from .llm_backend import BackendError
 from .strata_backend import StrataBackend
 
 #: `reasoning_effort` as Basalt's server accepts it (serve/config.py --reasoning-effort choices).
 BASALT_REASONING_LEVELS = ("none", "low", "medium", "high", "xhigh", "max")
+#: Every effort NAME Basalt's request parser takes (serve/frontend.py `EFFORT`): the ones a template's own
+#: map may use. `minimal` is real only for a template that maps it (Inkling: 0.1); elsewhere it is thinking off.
+BASALT_WIRE_EFFORTS = ("none", "minimal", "low", "medium", "high", "xhigh", "max")
 
 
 class BasaltBackend(StrataBackend):
@@ -87,3 +91,41 @@ class BasaltBackend(StrataBackend):
 
     def reasoning_levels(self, model: str | None = None) -> list[str]:
         return list(BASALT_REASONING_LEVELS)
+
+    def effort_scale(self, model: str | None = None):
+        """The model's `effort_scale.EffortScale` from its own template (T1398-B), or None.
+
+        Ryan, 2026-11-26: "it wants a value 0.1-1 and i still only see worded thinking values like low med
+        high etc ... but litetui doesnt display the "0.5" value like i wanted for inklinking yet".
+
+        Blocking: call it in a thread. One GET and no more: a running Basalt's `/props` carries the
+        served template (`chat_template`, serve/handler.py `_props`); it has no /apply-template, so
+        nothing is rendered and nothing can load or generate. Before any server answers, the chosen
+        pack's own template is read (the text the server will serve), so /think shows the numbers
+        before /engine start. None for a template with no effort map (Qwen3.8): the list above stays.
+        A number travels only for an architecture Basalt has a number rule for (`ARCH_EFFORT_STEP`).
+        """
+        from pathlib import Path
+        from urllib.parse import quote
+
+        from litetui.effort_scale import scale_from_template
+
+        props = None
+        try:
+            props = self._get_json(f"{self.host()}/props" + (f"?model={quote(model)}" if model else ""), timeout=5.0)
+        except BackendError:
+            pass
+        chosen = basalt_engine.basalt_pack(self._settings)
+        # Only a server that names itself Basalt (/props "basalt") is read: anything else on the port is a stranger.
+        if isinstance(props, dict) and isinstance(props.get("basalt"), dict) and isinstance(props.get("chat_template"), str):
+            template, source = props["chat_template"], "the template Basalt /props reports"
+            served = model or props.get("model_alias")
+            path = props.get("model_path")
+            pack = (Path(path) if isinstance(path, str) and path
+                    else chosen if chosen is not None and basalt_engine.model_name(chosen) == served else None)
+        else:
+            if chosen is None or (model and basalt_engine.model_name(chosen) != model):
+                return None
+            pack, template, source = chosen, basalt_engine.pack_template(chosen), f"template in {chosen.name}"
+        step = basalt_engine.ARCH_EFFORT_STEP.get(basalt_engine.pack_arch(pack)) if pack is not None else None
+        return scale_from_template(template, wire_names=BASALT_WIRE_EFFORTS, number_step=step, source=source)

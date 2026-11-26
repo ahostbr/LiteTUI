@@ -528,3 +528,58 @@ async def test_pilot_settings_thinking_select_shows_the_numbers():
         await pilot.pause()
         if shots := _shots():
             a.save_screenshot(filename="settings_thinking_select_inkling.svg", path=str(shots))
+
+
+# ── T1398-B: Inkling on Basalt (Ryan 2026-11-26: "litetui doesnt display the "0.5" value") ────────
+
+
+def _inkling_basalt():
+    return EffortScale(names=NAMES, numbers=parse_effort_map(INKLING), number_wire=True, number_step=0.01,
+                       source="template in Inkling-2-Mini-NVFP4-MX8.basalt", template_read=True)
+
+
+def test_think_0_5_on_basalt_is_set_shown_as_0_5_and_sent_as_50():
+    from litetui.effort_scale import think_chip
+
+    app = _App(_Backend(_inkling_basalt(), name="basalt", label="Basalt"), _inkling_basalt())
+    misc._cmd_think(app, "think", "0.5")
+    assert app.thinking_level == 0.5
+    assert think_chip(app) == "think:0.5"
+    assert app.messages[-1] == ("Thinking level: 0.5 (sends reasoning_effort=50: this server counts a number "
+                                "in steps of 0.01).")
+    rows = dict(misc._thinking_rows(app))
+    assert rows[0.5] == "manual · 0.5"
+    assert rows["high"] == "high · 0.9" and rows["minimal"] == "minimal · 0.1"
+    assert rows[misc.NUMBER_ROW] == "number…  · type one (Any number from 0 to 0.99, in steps of 0.01.)"
+
+
+def test_think_a_number_between_basalts_steps_is_refused_and_nothing_stored():
+    app = _App(_Backend(_inkling_basalt(), name="basalt", label="Basalt"), _inkling_basalt())
+    misc._cmd_think(app, "think", "0.555")
+    assert app.thinking_level == "high"
+    assert app.messages[-1] == ("0.555 not set: 0.555 is between this server's steps: it carries a number "
+                                "in steps of 0.01.")
+
+
+@pytest.mark.asyncio
+async def test_pilot_basalt_think_0_5_shows_0_5_in_the_header_and_the_picker():
+    """The look Ryan asked for: on Basalt's Inkling the header reads think:0.5 and every level shows its number."""
+    a = _real_app(_inkling_basalt())
+    a.backend = _Backend(_inkling_basalt(), name="basalt", label="Basalt")
+    a._effort_scales = {a._effort_scale_key(): _inkling_basalt()}
+    async with a.run_test(size=(120, 40)) as pilot:
+        misc._cmd_think(a, "think", "0.5")
+        await pilot.pause()
+        assert a.thinking_level == 0.5
+        assert a.sub_title.split(" · ")[0] == "Basalt"
+        assert "think:0.5" in a.sub_title and "think:0.5 (" not in a.sub_title
+        if shots := _shots():
+            a.save_screenshot(filename="think_header_inkling_basalt.svg", path=str(shots))
+        misc._cmd_think(a, "think", "")
+        await pilot.pause()
+        assert isinstance(a.screen, PickerScreen)
+        screen = a.export_screenshot()
+        for label in ("high · 0.9", "minimal · 0.1", "manual · 0.5"):
+            assert label.replace(" ", "&#160;") in screen or label in screen, f"{label!r} must be on screen"
+        if shots := _shots():
+            a.save_screenshot(filename="think_picker_inkling_basalt.svg", path=str(shots))

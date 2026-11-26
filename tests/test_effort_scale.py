@@ -292,3 +292,81 @@ def test_the_header_names_the_number_and_any_substitution():
     assert describe("high", QWEN_SCALE)[0] == "think:high -> xhigh"
     assert describe("off", INKLING_NINFER)[0] == "think:off · 0"
     assert describe(None, INKLING_NINFER)[0] == "think:default"
+
+# ── T1398-B: a server that carries a number only as a whole count of steps (Basalt) ───────────────
+#
+# Ryan, 2026-11-26: "it wants a value 0.1-1 and i still only see worded thinking values like low med high
+# etc ... but litetui doesnt display the "0.5" value like i wanted for inklinking yet". His Inkling runs
+# on Basalt, whose request parser takes a whole number 1-100 (serve/frontend.py:100) that its Inkling
+# dialect reads as hundredths, at most 0.99 (serve/models/inkling2.py:506-511): 50 is 0.5. A float is a 400.
+
+INKLING_BASALT = EffortScale(names=ALL, numbers=parse_effort_map(INKLING), number_wire=True, number_step=0.01,
+                             source="test", template_read=True)
+
+
+@pytest.mark.parametrize("number,count", [(0.5, 50), (0.1, 10), (0.01, 1), (0.99, 99), (0.07, 7), (0.29, 29), (0.57, 57)])
+def test_a_number_on_a_step_server_goes_top_level_as_its_whole_count_of_steps(number, count):
+    extra = _wire(INKLING_BASALT, number, "basalt")
+    assert extra["reasoning_effort"] == count and type(extra["reasoning_effort"]) is int
+    assert "chat_template_kwargs" not in extra, "Basalt answers 400 to a float wherever it rides"
+    assert INKLING_BASALT.refuse_number(number) is None
+
+
+def test_a_number_between_steps_or_past_the_top_is_refused_with_what_works():
+    assert INKLING_BASALT.refuse_number(0.555) == ("0.555 is between this server's steps: it carries a number "
+                                                    "in steps of 0.01.")
+    assert INKLING_BASALT.refuse_number(1) == "1 is outside this model's scale (0 to 0.99)."
+    assert INKLING_BASALT.refuse_number(50) == "50 is outside this model's scale (0 to 0.99)."
+    assert INKLING_BASALT.refuse_number(0.005) is not None
+
+
+def test_zero_on_a_step_server_is_the_templates_none_not_a_count_of_zero():
+    """Basalt answers 400 to a 0; the template maps "none" to 0, and that name reaches it."""
+    extra = _wire(INKLING_BASALT, 0, "basalt")
+    assert extra["chat_template_kwargs"] == {"reasoning_effort": "none"} and "reasoning_effort" not in extra
+    assert request_thinks(extra) is False
+
+
+def test_presets_on_a_step_server_are_still_sent_by_name():
+    for name in ("minimal", "low", "medium", "high", "xhigh", "max"):
+        assert _wire(INKLING_BASALT, name, "basalt") == {"reasoning_effort": name}
+
+
+def test_a_saved_number_between_steps_lands_on_the_nearest_mapped_number_and_says_so():
+    resolved = INKLING_BASALT.resolve(0.555)
+    assert (resolved.placement, resolved.value) == (TOP, "medium")
+    assert resolved.note.startswith("0.555 -> medium (0.7)")
+
+
+def test_the_header_shows_the_number_itself_on_a_step_server():
+    from litetui.effort_scale import describe, number_hint
+
+    assert describe(0.5, INKLING_BASALT, "Basalt") == (
+        "think:0.5", "Thinking level: 0.5 (sends reasoning_effort=50: this server counts a number in steps of 0.01).")
+    assert describe("high", INKLING_BASALT, "Basalt")[0] == "think:high · 0.9"
+    assert describe(0, INKLING_BASALT, "Basalt")[0] == "think:0 (as none)"
+    assert number_hint(INKLING_BASALT) == "Any number from 0 to 0.99, in steps of 0.01."
+
+
+def test_the_pinned_compaction_carries_a_step_number_in_the_same_place():
+    from litetui.turn_engine import chat_effort, pin_effort
+
+    chat = _wire(INKLING_BASALT, 0.5, "basalt")
+    value, placement = chat_effort(chat)
+    compact = TurnEngine.compact_request(model_id="m", messages=[], max_tokens=10, thinking_level="low",
+                                         tools_enabled=False, backend_name="basalt", effort_scale=INKLING_BASALT,
+                                         pinned_effort=value)
+    assert _effort_fields(pin_effort(compact.get("extra_body") or {}, value, placement)) == {"top": 50, "kwargs": None}
+
+
+def test_a_scale_from_the_template_alone_keeps_only_the_names_the_server_parses():
+    from litetui.effort_scale import scale_from_template
+
+    scale = scale_from_template(INKLING, wire_names=("none", "low", "medium", "high"), number_step=0.01, source="s")
+    assert scale.names == ("none", "low", "medium", "high") and scale.template_read and scale.number_wire
+    assert scale.numbers == parse_effort_map(INKLING) and scale.source == "s"
+    assert scale.resolve("minimal").value == "low", "a name the server does not parse lands on the nearest it does"
+    names_only = scale_from_template(INKLING, wire_names=ALL, source="s")
+    assert names_only.number_wire is False and "cannot send a number" in names_only.refuse_number(0.5)
+    assert scale_from_template(QWEN, wire_names=ALL, source="s") is None, "no map: the backend's own path stays"
+    assert scale_from_template(None, wire_names=ALL) is None

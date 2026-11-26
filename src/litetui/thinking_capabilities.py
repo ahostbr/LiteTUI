@@ -65,7 +65,7 @@ def thinking_capabilities(app):
         return {"levels": ["default", *_as_choices(scale.names)], "source": scale.source,
                 "note": "Levels this model's template accepts; a number from its scale is accepted too.",
                 "numbers": {("off" if k == "none" else k): v for k, v in scale.numbers.items()},
-                "number_wire": scale.number_wire}
+                "number_wire": scale.number_wire, "number_step": scale.number_step}
     if callable(metadata):
         levels = metadata(model)
         source = "backend model metadata" if levels else "unavailable"
