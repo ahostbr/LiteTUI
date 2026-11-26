@@ -54,7 +54,9 @@ def server():
                 "/v1/models": {"object": "list", "data": [{
                     "id": MODEL, "owned_by": "basalt", "status": {"value": value}, "meta": {"n_ctx": 150000},
                     "architecture": {"input_modalities": ["text"]}}]},
-            }.get(self.path)
+                "/props": state.get("props"),
+            }.get(self.path.split("?")[0])
+            state.setdefault("gets", []).append(self.path)
             self._send(200 if body else 404, body or {})
 
         def do_POST(self):
@@ -308,6 +310,112 @@ def test_view_image_is_told_why_basalt_takes_no_pictures_and_what_to_do(tmp_path
     _pack_with(pack, ["dense", "experts", "meta"])                    # no projector: "cannot see images" is true
     assert BasaltBackend(Settings(basalt_root=root)).image_input_off_note() is None
     assert BasaltBackend(Settings(basalt_root=str(tmp_path / "nowhere"))).image_input_off_note() is None
+
+
+# ── the model's own effort scale (T1398-B) ───────────────────────────────────
+#
+# Ryan, 2026-11-26: "double check on the litetui thinking level were sending for inklinking ... it wants a
+# value 0.1-1 and i still only see worded thinking values like low med high etc ... but litetui doesnt
+# display the "0.5" value like i wanted for inklinking yet". T1398-A read the scale on NInfer and
+# llama.cpp; Inkling moved to Basalt (a2a5d1d5), which had no reader, so its numbers never showed.
+
+INKLING_TEMPLATE = (__import__("pathlib").Path(__file__).parent / "fixtures" / "effort_templates"
+                    / "inkling2.jinja").read_text(encoding="utf-8")
+INKLING_MODEL = "Inkling-2-Mini-NVFP4-MX8"
+INKLING_MAP = {"none": 0.0, "minimal": 0.1, "low": 0.2, "medium": 0.7, "high": 0.9, "xhigh": 0.99, "max": 0.99}
+
+
+def _pack_holding(path, sections: dict):
+    """A `.basalt` file whose sections carry bytes (the header's offsets point at them)."""
+    import struct
+    offset, entries, payload = 64 << 10, b"", b""
+    for name, data in sections.items():
+        entries += struct.pack("<64sQQ32s16s", name.encode(), offset + len(payload), len(data), b"", b"")
+        payload += data
+    head = struct.pack("<8sIIQ40s", b"BASALTMF", 2, len(sections), offset, b"") + entries
+    path.write_bytes(head.ljust(offset, b"\0") + payload)
+
+
+def _inkling_pack(tmp_path, arch="inkling2", template=INKLING_TEMPLATE):
+    packs = tmp_path / "basalt" / "packs"
+    packs.mkdir(parents=True, exist_ok=True)
+    pack = packs / f"{INKLING_MODEL}.basalt"
+    _pack_holding(pack, {"tokenizer/chat_template.jinja": template.encode("utf-8"),
+                         "meta": json.dumps({"arch": arch}).encode()})
+    return str(tmp_path / "basalt"), pack
+
+
+def test_a_served_inklings_scale_is_its_templates_map_and_numbers_go_as_hundredths(server, tmp_path):
+    root, pack = _inkling_pack(tmp_path)
+    server["props"] = {"chat_template": INKLING_TEMPLATE, "model_alias": INKLING_MODEL, "model_path": str(pack),
+                       "basalt": {"version": "0.5.6", "capabilities": []}}
+    backend = _backend(server["host"], basalt_root=root)
+    scale = backend.effort_scale(INKLING_MODEL)
+    assert scale.template_read and scale.numbers == INKLING_MAP
+    assert scale.names == ("none", "minimal", "low", "medium", "high", "xhigh", "max")
+    assert scale.number_wire and scale.number_step == 0.01
+    assert scale.source == "the template Basalt /props reports"
+    assert scale.label("high") == "high · 0.9" and scale.label("minimal") == "minimal · 0.1"
+    resolved = scale.resolve(0.5)
+    assert (resolved.placement, resolved.value) == ("top", 50)
+    assert [p.split("?")[0] for p in server["gets"]] == ["/props"], "one read, and nothing that generates"
+    assert server["gets"][0] == f"/props?model={INKLING_MODEL}"
+
+
+def test_the_chosen_packs_own_template_is_read_before_any_server_answers(tmp_path):
+    """/think shows the numbers before /engine start: the pack carries the template the server will serve."""
+    root, pack = _inkling_pack(tmp_path)
+    backend = BasaltBackend(Settings(backend="basalt", basalt_root=root, basalt_host="http://127.0.0.1:9"))
+    scale = backend.effort_scale(INKLING_MODEL)
+    assert scale.numbers == INKLING_MAP and scale.number_step == 0.01
+    assert scale.source == f"template in {pack.name}"
+    assert backend.effort_scale("Some-Other-Model") is None, "another model's pack is not this model's scale"
+    assert basalt_engine.pack_template(pack) == INKLING_TEMPLATE
+    assert basalt_engine.pack_template(tmp_path / "gone.basalt") is None
+
+
+def test_a_model_whose_template_maps_no_numbers_keeps_the_backends_own_levels(server, tmp_path):
+    """Qwen3.8 on Basalt: names only. No scale, so the turn keeps the path it has."""
+    root, _pack = _inkling_pack(tmp_path, arch="qwen35", template="{%- set role = {\"user\": \"<u>\"} -%}hello")
+    server["props"] = {"chat_template": "{{ messages }}", "model_alias": INKLING_MODEL, "basalt": {}}
+    assert _backend(server["host"], basalt_root=root).effort_scale(INKLING_MODEL) is None
+    assert BasaltBackend(Settings(backend="basalt", basalt_root=root,
+                                  basalt_host="http://127.0.0.1:9")).effort_scale(INKLING_MODEL) is None
+
+
+def test_an_effort_map_on_an_architecture_with_no_number_rule_takes_names_only(server, tmp_path):
+    """The step is the Inkling dialect's (hundredths). A map on any other architecture gets no number wire."""
+    root, pack = _inkling_pack(tmp_path, arch="qwen35")
+    server["props"] = {"chat_template": INKLING_TEMPLATE, "model_alias": INKLING_MODEL, "model_path": str(pack),
+                       "basalt": {}}
+    scale = _backend(server["host"], basalt_root=root).effort_scale(INKLING_MODEL)
+    assert scale.numbers == INKLING_MAP and scale.number_wire is False and scale.number_step is None
+    assert "cannot send a number" in scale.refuse_number(0.5)
+
+
+def test_a_server_that_is_not_basalt_is_not_read_for_a_template(server, tmp_path):
+    root, _pack = _inkling_pack(tmp_path)
+    server["props"] = {"chat_template": "{%- set m = {\"low\": 1, \"high\": 2} -%}", "model_alias": INKLING_MODEL}
+    scale = _backend(server["host"], basalt_root=root).effort_scale(INKLING_MODEL)
+    assert scale.numbers == INKLING_MAP and scale.source.startswith("template in "), "the pack's, not the stranger's"
+
+
+def test_a_turn_on_a_served_inkling_sends_the_name_or_the_count_never_a_float(server, tmp_path):
+    root, pack = _inkling_pack(tmp_path)
+    server["props"] = {"chat_template": INKLING_TEMPLATE, "model_alias": INKLING_MODEL, "model_path": str(pack),
+                       "basalt": {}}
+    scale = _backend(server["host"], basalt_root=root).effort_scale(INKLING_MODEL)
+
+    def sent(level):
+        req = turn_engine.TurnEngine.chat_request(
+            model_id=INKLING_MODEL, messages=[], tools_enabled=False, max_tokens_tools=1, max_tokens_chat=1,
+            request_overrides={}, thinking_level=level, backend_name="basalt", effort_scale=scale)
+        return req.get("extra_body", {})
+
+    assert sent("high") == {"reasoning_effort": "high"}
+    assert sent("minimal") == {"reasoning_effort": "minimal"}, "0.1 reaches Inkling; it was folded to low (0.2)"
+    assert sent(0.5) == {"reasoning_effort": 50}
+    assert sent("off") == {"chat_template_kwargs": {"reasoning_effort": "none"}}
 
 
 def test_strata_answers_the_same_question_from_its_configs_model_name(tmp_path):

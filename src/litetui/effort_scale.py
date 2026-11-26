@@ -142,6 +142,10 @@ class EffortScale:
     source: str = ""
     #: True when `names` came from the template or a probe of it, False for a backend's static list.
     template_read: bool = False
+    #: Set when the server carries a number only as a WHOLE COUNT of this step, sent top-level as that
+    #: count (T1398-B). Basalt: its parser takes 1-100 (serve/frontend.py:100) and its Inkling dialect
+    #: reads that as hundredths (serve/models/inkling2.py:506-511), so 0.5 goes out as 50; a float is a 400.
+    number_step: float | None = None
 
     # -- reading the scale ------------------------------------------------------------------------
 
@@ -172,7 +176,16 @@ class EffortScale:
             return False
         if self.integer_only and not float(number).is_integer():
             return False
-        return float(number) <= max(float(v) for v in self.numbers.values())
+        if float(number) > max(float(v) for v in self.numbers.values()):
+            return False
+        return self.number_step is None or self.step_count(number) is not None
+
+    def step_count(self, number) -> int | None:
+        """`number` as a whole count of `number_step` (0.5 at a step of 0.01 -> 50), or None when it is
+        between steps or under one step (0 is the template's "none", never a count)."""
+        count = float(number) / self.number_step
+        whole = round(count)
+        return whole if whole >= 1 and abs(count - whole) < 1e-6 else None
 
     def label(self, name: str) -> str:
         """ "high · 0.9" when the template maps it, else the bare name."""
@@ -197,9 +210,12 @@ class EffortScale:
         if self.accepts_number(number) or self.name_for(number) is not None:
             return None
         if self.number_wire:
-            top = _show(max(self.numbers.values(), key=float))
+            top = max(self.numbers.values(), key=float)
+            if self.number_step is not None and float(number) <= float(top):
+                return (f"{_show(number)} is between this server's steps: it carries a number in steps of "
+                        f"{_show(self.number_step)}.")
             whole = ", whole numbers only" if self.integer_only else ""
-            return f"{_show(number)} is outside this model's scale (0 to {top}{whole})."
+            return f"{_show(number)} is outside this model's scale (0 to {_show(top)}{whole})."
         return (f"This server cannot send a number to the template yet. Numbers that work here: "
                 f"{', '.join(self.sendable_numbers())}.")
 
@@ -228,6 +244,8 @@ class EffortScale:
 
     def _resolve_number(self, number) -> Resolved:
         if self.accepts_number(number):
+            if self.number_step is not None:
+                return Resolved(TOP, self.step_count(number))
             return Resolved(KWARGS, number)
         name = self.name_for(number)
         if name is not None:
@@ -245,6 +263,21 @@ class EffortScale:
         return Resolved(KWARGS if near == NONE else TOP, near,
                         f"{_show(number)} -> {near} ({_show(self.numbers[near])}): "
                         f"{self.refuse_number(number) or ''}".rstrip(": "))
+
+
+def scale_from_template(template: str | None, *, wire_names, number_step: float | None = None,
+                        source: str = "") -> EffortScale | None:
+    """A scale from the template text alone, for a server with no /apply-template to probe (T1398-B).
+
+    Names: the template map's own, kept where the server's request parser takes the name (`wire_names`).
+    Numbers travel only when the caller knows how this server carries one (`number_step`). None for a
+    template with no effort map: the backend's own level list stays in charge."""
+    numbers = parse_effort_map(template)
+    if not numbers:
+        return None
+    names = tuple(name for name in KNOWN_NAMES if name in numbers and name in wire_names)
+    return EffortScale(names=names, numbers=numbers, number_wire=number_step is not None,
+                       number_step=number_step, source=source, template_read=True)
 
 
 def parse_number(text):
@@ -280,7 +313,8 @@ def number_hint(scale: EffortScale | None) -> str:
     if scale.number_wire:
         top = _show(max(scale.numbers.values(), key=float))
         whole = ", whole numbers only" if scale.integer_only else ""
-        return f"Any number from 0 to {top}{whole}."
+        steps = f", in steps of {_show(scale.number_step)}" if scale.number_step is not None else ""
+        return f"Any number from 0 to {top}{whole}{steps}."
     return f"This server sends only the template's own numbers: {', '.join(scale.sendable_numbers())}."
 
 
@@ -331,6 +365,9 @@ def describe(level, scale: EffortScale | None, backend_label: str = "this backen
     if is_number(level):
         if resolved.placement == KWARGS and resolved.value == level:
             return f"think:{shown}", f"Thinking level: {shown} (sent as a number to the template)."
+        if scale.number_step is not None and scale.accepts_number(level):
+            return f"think:{shown}", (f"Thinking level: {shown} (sends reasoning_effort={resolved.value}: this "
+                                      f"server counts a number in steps of {_show(scale.number_step)}).")
         return (f"think:{shown} (as {resolved.value})", resolved.note + ".")
     sent = "off" if resolved.value == NONE else resolved.value
     number = scale.number_for(resolved.value)

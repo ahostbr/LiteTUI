@@ -61,6 +61,11 @@ BASALT_DEFAULT_CONTEXT = 131072
 INKLING_ARCH = "inkling2"
 ARCH_TRAINED_CONTEXT = {INKLING_ARCH: 1048576}
 ARCH_KV_CHOICES = {INKLING_ARCH: ("fp16", "fp8")}
+#: How Basalt carries a reasoning NUMBER for an architecture (T1398-B): its request parser takes a whole
+#: number 1-100 (serve/frontend.py `effort_kwargs`) and the dialect says what one unit is. Inkling 2:
+#: "a number from 1 to 100 is that many hundredths, at most 0.99" (serve/models/inkling2.py `effort_level`).
+#: An architecture not listed takes level names only (the Qwen dialect answers 400 to a number).
+ARCH_EFFORT_STEP = {INKLING_ARCH: 0.01}
 #: Folders of an install that hold packs.
 PACK_DIRS = ("packs", "models")
 #: The CUDA 13 runtime the engine links (docs/platforms.md: "on the library path").
@@ -236,6 +241,30 @@ def pack_arch(pack) -> str | None:
         _ARCH_CACHE[key] = arch
         return arch
     except (OSError, struct.error, ValueError, AttributeError):
+        return None
+
+
+#: The section a pack keeps its chat template in (the server serves this text: serve/server.py).
+TEMPLATE_SECTION = "tokenizer/chat_template.jinja"
+_TEMPLATE_LIMIT = 4 << 20
+
+
+def pack_template(pack) -> str | None:
+    """The chat template a pack carries, or None for a file that is missing, unreadable, not a pack
+    or has none. Only the header and that one section are read."""
+    try:
+        with open(pack, "rb") as fh:
+            head = fh.read(_PACK_HEADER_BYTES)
+            magic, _version, count, _size, _pad = _PACK_HEADER.unpack_from(head, 0)
+            if magic != _PACK_MAGIC:
+                return None
+            for i in range(count):
+                raw, off, size, _digest, _x = _PACK_ENTRY.unpack_from(head, _PACK_HEADER.size + i * _PACK_ENTRY.size)
+                if raw.rstrip(b"\0").decode("utf-8", "replace") == TEMPLATE_SECTION and 0 < size <= _TEMPLATE_LIMIT:
+                    fh.seek(off)
+                    return fh.read(size).decode("utf-8")
+        return None
+    except (OSError, struct.error, ValueError):
         return None
 
 
