@@ -182,6 +182,47 @@ def test_unsupported_cli_thinking_blocks_prompt():
     assert app._cli_launch_error
 
 
+def _basalt_inkling_app(level):
+    """T1430: a seat launched with a NUMBER (its saved level) on Basalt's Inkling."""
+    from litetui.effort_scale import EffortScale
+
+    scale = EffortScale(names=("none", "minimal", "low", "medium", "high", "xhigh", "max"),
+                        numbers={"none": 0.0, "minimal": 0.1, "low": 0.2, "medium": 0.7, "high": 0.9,
+                                 "xhigh": 0.99, "max": 0.99},
+                        number_wire=True, number_step=0.01, template_read=True)
+    app = _FakeApp('Inkling', None, [ModelRow(key='Inkling', path=None, source='server', loaded=True)])
+    app._cli_thinking_level = level
+    app.backend = SimpleNamespace(name='basalt', label='Basalt', host=lambda: 'http://127.0.0.1:0',
+                                  effort_scale=lambda model: scale,
+                                  reasoning_levels=lambda model: ['none', 'low', 'medium', 'high', 'xhigh', 'max'])
+    app._effort_scale_key = lambda: ('basalt', 'http://127.0.0.1:0', 'Inkling')
+    app._cached_effort_scale = lambda: (getattr(app, '_effort_scales', None) or {}).get(app._effort_scale_key())
+    return app
+
+
+def test_a_launch_level_that_is_a_number_is_judged_by_the_think_rule_not_the_name_list():
+    """It was checked against the NAME list only, so every numeric launch level was refused."""
+    app = _basalt_inkling_app('0.4')
+    _run(app)
+    assert not app._cli_launch_error, app._said
+    assert app._cli_effective_thinking == '0.4' and app._thinking_level == '0.4'
+
+
+def test_a_launch_name_only_the_template_has_is_accepted_once_the_template_is_read():
+    app = _basalt_inkling_app('minimal')       # Basalt's static list has no minimal; Inkling's template does
+    _run(app)
+    assert not app._cli_launch_error, app._said
+
+
+def test_a_launch_number_the_model_cannot_take_blocks_and_says_why():
+    app = _basalt_inkling_app('0.555')
+    _run(app)
+    assert app._cli_launch_error == 'Requested thinking level is unsupported by the selected model'
+    assert app._said[-1] == ("Requested thinking level is unsupported by the selected model (0.555: 0.555 is "
+                             "between this server's steps: it carries a number in steps of 0.01.); "
+                             "launch prompt blocked.")
+
+
 def test_invocation_effort_overrides_request_copy_not_backend_preferences():
     original = {'reasoning_effort': 'low', 'temperature': .2}
     app = SimpleNamespace(backend=SimpleNamespace(name='codex', reasoning_levels=lambda model: ['low', 'high'], request_overrides=lambda model: original),

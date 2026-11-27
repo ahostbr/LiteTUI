@@ -110,7 +110,7 @@ def test_think_0_1_where_numbers_travel_is_sent_as_a_number():
     assert app.thinking_level == 0.1
     assert app.messages[-1] == "Thinking level: 0.1 (sent as a number to the template)."
     rows = dict(misc._thinking_rows(app))
-    assert rows[0.1] == "manual · 0.1"
+    assert rows["0.1"] == "0.1 · minimal" and 0.1 not in rows, "T1430: 0.1 is a row of the grid, not a manual row"
 
 
 def test_think_0_5_on_ninfer_today_is_refused_with_the_numbers_that_work_and_nothing_stored():
@@ -548,8 +548,8 @@ def test_think_0_5_on_basalt_is_set_shown_as_0_5_and_sent_as_50():
     assert app.messages[-1] == ("Thinking level: 0.5 (sends reasoning_effort=50: this server counts a number "
                                 "in steps of 0.01).")
     rows = dict(misc._thinking_rows(app))
-    assert rows[0.5] == "manual · 0.5"
-    assert rows["high"] == "high · 0.9" and rows["minimal"] == "minimal · 0.1"
+    assert rows["0.5"] == "0.5" and 0.5 not in rows, "T1430: 0.5 is a row of the grid, not a manual row"
+    assert rows["0.9"] == "0.9 · high" and rows["0.1"] == "0.1 · minimal"
     assert rows[misc.NUMBER_ROW] == "number…  · type one (Any number from 0 to 0.99, in steps of 0.01.)"
 
 
@@ -579,7 +579,118 @@ async def test_pilot_basalt_think_0_5_shows_0_5_in_the_header_and_the_picker():
         await pilot.pause()
         assert isinstance(a.screen, PickerScreen)
         screen = a.export_screenshot()
-        for label in ("high · 0.9", "minimal · 0.1", "manual · 0.5"):
+        for label in ("0.9 · high", "0.1 · minimal", "0.5"):
             assert label.replace(" ", "&#160;") in screen or label in screen, f"{label!r} must be on screen"
         if shots := _shots():
             a.save_screenshot(filename="think_picker_inkling_basalt.svg", path=str(shots))
+
+
+# ── T1430: the number grid (Ryan 2026-11-26: "still not showing me the the fine thinking numbers the
+# 0.1-0.9 range") ────────────────────────────────────────────────────────────────────────────────
+
+
+def _basalt_app(level="high"):
+    return _App(_Backend(_inkling_basalt(), name="basalt", label="Basalt"), _inkling_basalt(), level=level)
+
+
+GRID = ["0.1", "0.2", "0.3", "0.4", "0.5", "0.6", "0.7", "0.8", "0.9", "0.99"]
+
+
+def test_basalt_inkling_picker_offers_off_then_every_tenth_then_0_99_each_naming_its_preset():
+    rows = misc._thinking_rows(_basalt_app())
+    ids = [level for level, _ in rows]
+    assert ids == ["off", *GRID, misc.NUMBER_ROW, "unset"]
+    labels = dict(rows)
+    assert labels["off"] == "0 · off"
+    assert labels["0.1"] == "0.1 · minimal" and labels["0.2"] == "0.2 · low"
+    assert labels["0.7"] == "0.7 · medium" and labels["0.9"] == "0.9 · high"
+    assert labels["0.99"] == "0.99 · xhigh, max"
+    assert [labels[n] for n in ("0.3", "0.4", "0.5", "0.6", "0.8")] == ["0.3", "0.4", "0.5", "0.6", "0.8"]
+
+
+@pytest.mark.parametrize("row,count", [(n, round(float(n) * 100)) for n in GRID])
+def test_picking_a_grid_row_stores_that_number_shows_it_and_sends_its_hundredths(row, count):
+    from litetui.effort_scale import effort_body, think_chip
+
+    app = _basalt_app()
+    misc._on_thinking_picked(app, row)
+    assert app.thinking_level == float(row)
+    assert think_chip(app) == f"think:{row}"
+    assert app.messages[-1] == (f"Thinking level: {row} (sends reasoning_effort={count}: this server counts a "
+                                "number in steps of 0.01).")
+    assert effort_body(_inkling_basalt(), app.thinking_level) == {"reasoning_effort": count}
+
+
+def test_picking_off_on_the_grid_sends_none_through_the_template():
+    from litetui.effort_scale import effort_body, think_chip
+
+    app = _basalt_app()
+    misc._on_thinking_picked(app, "off")
+    assert app.thinking_level == "off" and think_chip(app) == "think:off · 0"
+    assert effort_body(_inkling_basalt(), "off") == {"chat_template_kwargs": {"reasoning_effort": "none"}}
+
+
+def test_the_grid_picker_opens_on_the_number_a_saved_preset_sends():
+    assert misc._picker_current(_basalt_app("max")) == "0.99"
+    assert misc._picker_current(_basalt_app("medium")) == "0.7"
+    assert misc._picker_current(_basalt_app(0.4)) == "0.4"
+    assert misc._picker_current(_basalt_app("off")) == "off"
+    assert misc._picker_current(_basalt_app(None)) == "unset"
+
+
+def test_a_number_off_the_grid_keeps_its_manual_row_and_preset_names_stay_typeable():
+    app = _basalt_app(0.55)
+    assert dict(misc._thinking_rows(app))[0.55] == "manual · 0.55"
+    misc._cmd_think(app, "think", "high")
+    assert app.thinking_level == "high"
+    assert app.messages[-1] == "Thinking level: high (sends reasoning_effort='high' -> template level 0.9)."
+
+
+def test_models_without_a_fractional_number_wire_keep_their_named_levels():
+    """Brief: "Other models keep their named levels exactly as today"."""
+    ninfer_today = [level for level, _ in misc._thinking_rows(_App(_Backend(_inkling()), _inkling()))]
+    assert ninfer_today == ["off", "minimal", "low", "medium", "high", "xhigh", "max", misc.NUMBER_ROW, "unset"]
+    assert [level for level, _ in misc._thinking_rows(_App(_Backend(QWEN), QWEN))] == \
+        ["off", "low", "medium", "xhigh", "unset"]
+    deepseek = EffortScale(names=("low", "high", "max"), numbers={"low": 50, "high": 75, "max": 100},
+                           number_wire=True, template_read=True)
+    assert [level for level, _ in misc._thinking_rows(_App(_Backend(deepseek), deepseek))][:3] == \
+        ["low", "high", "max"]
+
+
+def test_the_scale_is_read_with_no_served_model():
+    """The snip: Basalt with nothing serving had no model_id, so the pack's template was never read and
+    the header said think:max. Now the reader is asked with None (Basalt: the chosen pack)."""
+    a = owned_app()
+    a.backend = _Backend(_inkling_basalt(), name="basalt", label="Basalt")
+    asked = []
+    a.backend.effort_scale = lambda model: asked.append(model) or _inkling_basalt()
+    a.model_id = ""
+    a.thinking_level = "max"
+    assert a._effort_scale_now() is not None and asked == [None]
+    from litetui.effort_scale import think_chip
+    assert think_chip(a) == "think:max · 0.99"
+    a._effort_scale_now()
+    assert asked == [None], "cached: read once"
+    a._effort_scale_now(fresh=True)
+    assert asked == [None, None], "fresh (a new pack was chosen) reads again"
+
+
+@pytest.mark.asyncio
+async def test_pilot_basalt_grid_picker_picture():
+    """The headless picture of the selector (LITETUI_T1398_SHOTS names the folder)."""
+    a = _real_app(_inkling_basalt(), level=0.4)
+    a.backend = _Backend(_inkling_basalt(), name="basalt", label="Basalt")
+    a._effort_scales = {a._effort_scale_key(): _inkling_basalt()}
+    async with a.run_test(size=(120, 40)) as pilot:
+        a.update_header()
+        await pilot.pause()
+        assert "think:0.4" in a.sub_title and "think:0.4 (" not in a.sub_title
+        misc._cmd_think(a, "think", "")
+        await pilot.pause()
+        assert isinstance(a.screen, PickerScreen)
+        screen = a.export_screenshot()
+        for label in ("0 · off", "0.3", "0.4", "0.7 · medium", "0.99 · xhigh, max"):
+            assert label.replace(" ", "&#160;") in screen or label in screen, f"{label!r} must be on screen"
+        if shots := _shots():
+            a.save_screenshot(filename="t1430_think_grid_inkling_basalt.svg", path=str(shots))

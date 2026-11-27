@@ -251,6 +251,8 @@ def _pick_server_config(app) -> None:
             candidate = context_choice.settings_after(candidate, backend.name, model, tokens)
         if getattr(app, 'convo_dir', None) is None:
             app.settings = candidate        # instance-only, as for the NInfer artifact
+            if callable(getattr(app.backend, "set_settings", None)):
+                app.backend.set_settings(candidate)     # the scale below reads the backend's settings
         else:
             app._on_settings_saved(candidate)
             result = getattr(app, '_settings_save_result', None)
@@ -260,6 +262,9 @@ def _pick_server_config(app) -> None:
         app.system_message(
             f"{label} model set to {model}{at} — /engine start to serve it."
         )
+        if callable(getattr(app.backend, "effort_scale", None)) and hasattr(app, "_discover_effort_scale"):
+            # T1430: the chosen pack's own template, before any server runs (/think shows its numbers now).
+            app._discover_effort_scale(fresh=True)
 
     pick(app, f"Select a {label} model (served on the next /engine start)", rows, _picked, current=chosen)
 

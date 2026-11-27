@@ -6024,6 +6024,10 @@ class LiteTUI(App):
                 self._connect_settled = True
                 if hasattr(self, '_connect_done'):
                     self._connect_done.set()
+                if not self.available_models and callable(getattr(self.backend, "effort_scale", None)):
+                    # T1430: nothing is serving (Basalt before /engine start). The success branch
+                    # reads the scale itself; here the chosen pack's template is all there is.
+                    self._discover_effort_scale()
 
     _connect = connect          # arrival alias (PLAN §2b)
 
@@ -6321,10 +6325,21 @@ class LiteTUI(App):
                     self._model_thinking_levels = await asyncio.to_thread(
                         thinking_probe.get_effective_levels, self.settings.lm_host, self.model_id,
                         self.settings.lmstudio_graded_thinking_models)
+                from litetui.effort_scale import as_level, backend_label, is_number, number_refusal
                 from litetui.thinking_capabilities import thinking_capabilities
-                if level not in thinking_capabilities(self)['levels']:
+                # T1430: the served template's levels, read now (connect's own read is a worker that may
+                # not have finished), so a level the template takes is judged against the template.
+                scale = (await asyncio.to_thread(LiteTUI._effort_scale_now, self)
+                         if callable(getattr(self.backend, 'effort_scale', None)) else None)
+                if is_number(as_level(level)):
+                    # A number was judged against the NAME list and always refused: the /think rule.
+                    why = number_refusal(as_level(level), scale, backend_label(self))
+                else:
+                    why = None if level in thinking_capabilities(self)['levels'] else ''
+                if why is not None:
                     self._cli_launch_error = 'Requested thinking level is unsupported by the selected model'
-                    self._system(self._cli_launch_error + '; launch prompt blocked.')
+                    self._system(self._cli_launch_error + (f' ({level}: {why})' if why else '')
+                                 + '; launch prompt blocked.')
                 else:
                     self._cli_effective_thinking = level
                     self._thinking_level = None if level == 'default' else level
@@ -7785,7 +7800,7 @@ class LiteTUI(App):
         (the header, /think and the settings screen read this)."""
         return (getattr(self, "_effort_scales", None) or {}).get(self._effort_scale_key())
 
-    def _effort_scale_now(self):
+    def _effort_scale_now(self, fresh: bool = False):
         """T1398: the current model's EffortScale, read on first use. BLOCKING (renders through
         the engine's /apply-template, never generates): call it in a thread. None for a backend
         that reads no template. A scale whose template could not be read is remembered for EFFORT_SCALE_MISS_TTL
@@ -7793,22 +7808,27 @@ class LiteTUI(App):
         engine that comes up later is still asked again. The key is (backend, host, model):
         changing any of them asks at once."""
         reader = getattr(getattr(self, "backend", None), "effort_scale", None)
-        if not callable(reader) or not getattr(self, "model_id", None):
+        if not callable(reader):
             return None
+        # T1430: no model_id is no reason to skip. Basalt with nothing serving has none, and its
+        # effort_scale(None) reads the chosen pack's template; every other reader answers None for it.
         key = self._effort_scale_key()
         scales = getattr(self, "_effort_scales", None)
         if scales is None:
             scales = self._effort_scales = {}
-        if key in scales:
-            return scales[key]
         misses = getattr(self, "_effort_scale_misses", None)
         if misses is None:
             misses = self._effort_scale_misses = {}
+        if fresh:                       # the choice behind this key changed (a new pack): read again
+            scales.pop(key, None)
+            misses.pop(key, None)
+        if key in scales:
+            return scales[key]
         miss = misses.get(key)
         if miss is not None and time.monotonic() - miss[0] < EFFORT_SCALE_MISS_TTL:
             return miss[1]
         try:
-            scale = reader(self.model_id)
+            scale = reader(self.model_id or None)
         except Exception:
             scale = None
         if scale is not None and scale.template_read:
@@ -7819,10 +7839,10 @@ class LiteTUI(App):
         return scale
 
     @work(thread=True, group="effort-scale", exclusive=True)
-    def _discover_effort_scale(self) -> None:
+    def _discover_effort_scale(self, fresh: bool = False) -> None:
         """T1398: read the model's scale after connect or a switch, so /think, the header and the
         settings screen show the number each level sends."""
-        self._effort_scale_now()
+        self._effort_scale_now(fresh)
         try:
             self.call_from_thread(self.update_header)
         except Exception:
