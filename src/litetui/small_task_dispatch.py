@@ -123,8 +123,9 @@ class Request:
 
 
 def _git(cwd, *args):
-    result = subprocess.run(['git', '-C', str(cwd), *args], capture_output=True,
-                            encoding='utf-8', errors='strict', timeout=15, check=False)
+    from litetui.gitexe import git_cmd, git_env
+    result = subprocess.run(git_cmd('-C', str(cwd), *args), capture_output=True,
+                            encoding='utf-8', errors='strict', timeout=15, check=False, env=git_env())
     if result.returncode:
         raise Unavailable('Git isolation/receipt verification unavailable')
     return result.stdout.strip()

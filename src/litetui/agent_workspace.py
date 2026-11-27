@@ -20,7 +20,8 @@ class AgentWorkspace:
 def _git(root, *args):
     try:
         from litetui import ttyguard
-        result = ttyguard.run(['git', '-C', str(root), *args], timeout=60)
+        from litetui.gitexe import git_cmd, git_env
+        result = ttyguard.run(git_cmd('-C', str(root), *args), timeout=60, env=git_env())
     except (OSError, subprocess.TimeoutExpired) as exc:
         raise WorkspaceBlocked(f'Git workspace operation failed: {exc}') from exc
     if result.returncode:

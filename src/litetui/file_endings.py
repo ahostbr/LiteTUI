@@ -6,6 +6,7 @@ import subprocess
 from pathlib import Path
 
 from litetui import ttyguard
+from litetui.gitexe import git_cmd, git_env
 
 
 def normalize(text: str, ending: str) -> str:
@@ -28,7 +29,7 @@ def _dominant(data: bytes) -> str | None:
 def _git_ending(path: Path) -> str | None:
     """Ask Git rather than reimplement nested attributes or worktree config."""
     def git(*args: str) -> str | None:
-        result = ttyguard.run(["git", *args], cwd=path.parent, timeout=2)
+        result = ttyguard.run(git_cmd(*args), cwd=path.parent, timeout=2, env=git_env())
         return result.stdout.strip() if result.returncode == 0 else None
 
     try:
