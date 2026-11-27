@@ -345,18 +345,18 @@ async def test_real_stream_rejected_completion_never_finalizes(app, tmp_path, mo
         # excluded because of what it IS, not because of what it says or how
         # many of it there are.
         completions = [r for r in requests if r.get("purpose", "turn") == "turn"]
-        summaries = [r for r in requests if r.get("purpose") == "card-summary"]
+        side = [r for r in requests if r.get("purpose", "turn") != "turn"]
         assert len(completions) == (2 if accept_after else 4), (
-            f"completions={len(completions)} summaries={len(summaries)} "
+            f"completions={len(completions)} side={len(side)} "
             f"total={len(requests)}")
         # ⬜ THE FILTER MUST BE DOING WORK. Without this, a build where nothing
         # tagged itself at all — every call defaulting to "turn" — would pass
         # the line above by having nothing to exclude, and the arm would be
         # green for the reason it was red. 0-of-0 and 0-of-1 are the same digit
         # until you say which you expect.
-        # T1433: a finished card is titled from its own text; no card-summary side call is sent
-        # at all, accepted or denied (it evicted the cached conversation on one-slot engines).
-        assert summaries == [], requests
+        # T1433: a finished card is titled from its own text; no side request is sent at all,
+        # accepted or denied (the summary one evicted the cached conversation on one-slot engines).
+        assert side == [], requests
         assert len(requests) == len(completions), "a completion was mis-tagged"
         assert finalized == ([1] if accept_after else [])
         # 🔴 THE stopReason, NOT DICT IDENTITY (T816). These were exact-dict

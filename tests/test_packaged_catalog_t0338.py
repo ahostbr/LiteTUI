@@ -11,7 +11,7 @@ import pytest
 
 # Independent oracle: do not derive expected names from production MUTABLE.
 EXPECTED = {
-    'card-summary.md', 'claude-tools.md', 'compact-owner.md', 'compact.md',
+    'claude-tools.md', 'compact-owner.md', 'compact.md',
     'conversation-store.md', 'harness-capabilities.md', 'ordinary-instructions.md',
     'owner-store.md', 'plan-mode.md', 'seat-instructions.md', 'systemprompt.md',
     'tool-denied.md', 'tools.md', 'wake-after-compact.md', 'role.md', 'method.md',

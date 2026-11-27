@@ -234,8 +234,6 @@ async def test_only_accepted_terminal_answer_publishes_recap(tmp_path, monkeypat
     async def create(**kwargs):
         purpose = kwargs.get('purpose', 'turn')
         requests.append(purpose)
-        if purpose == 'card-summary':
-            return SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content='summary'))])
         return next(stream_iter)
     monkeypatch.setattr(app_module.model_transport, 'for_app',
                         lambda app: SimpleNamespace(create=create))
@@ -289,8 +287,6 @@ async def test_real_turn_read_tool_finishes_as_compact_row(monkeypatch, initial_
     ])
 
     async def create(**kwargs):
-        if kwargs.get('purpose') == 'card-summary':
-            return SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content='summary'))])
         return next(streams)
 
     monkeypatch.setattr(app_module.model_transport, 'for_app',
@@ -625,8 +621,6 @@ async def test_real_codex_stream_keeps_responding_after_first_chunk(monkeypatch)
             pass
 
     async def create(**kwargs):
-        if kwargs.get('purpose') == 'card-summary':
-            return SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content='summary'))])
         return Stream()
 
     monkeypatch.setattr(app_module.model_transport, 'for_app',

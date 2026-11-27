@@ -27,11 +27,11 @@ def layer(tmp_path, name, text):
 def test_resolution_partial_and_reset_retains_revision(tmp_path, monkeypatch):
     repo = tmp_path / "repo"
     repo.mkdir()
-    (repo / "card-summary.md").write_text("repo card", encoding="utf-8")
+    (repo / "plan-mode.md").write_text("repo plan", encoding="utf-8")
     monkeypatch.setattr(paths, "_REPO_PROMPTS", repo)
     layer(tmp_path, "compact.md", "seat compact")
     assert paths.prompt_file("compact.md", convo_dir=tmp_path).read_text() == "seat compact"
-    assert paths.prompt_file("card-summary.md", convo_dir=tmp_path).read_text() == "repo card"
+    assert paths.prompt_file("plan-mode.md", convo_dir=tmp_path).read_text() == "repo plan"
     assert paths.prompt_file("wake-after-compact.md", convo_dir=tmp_path).parent == paths.PROMPTS_DIR
     cmd = command(tmp_path, "compact.md", "next compact")
     commands.apply(tmp_path, cmd)
