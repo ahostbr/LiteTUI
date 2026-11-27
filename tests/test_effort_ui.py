@@ -110,7 +110,7 @@ def test_think_0_1_where_numbers_travel_is_sent_as_a_number():
     assert app.thinking_level == 0.1
     assert app.messages[-1] == "Thinking level: 0.1 (sent as a number to the template)."
     rows = dict(misc._thinking_rows(app))
-    assert rows[0.1] == "manual · 0.1"
+    assert rows["0.1"] == "0.1 · minimal" and 0.1 not in rows, "T1430: 0.1 is a row of the grid, not a manual row"
 
 
 def test_think_0_5_on_ninfer_today_is_refused_with_the_numbers_that_work_and_nothing_stored():
@@ -354,9 +354,9 @@ async def test_pilot_settings_manual_number_saves_refuses_and_save_still_works()
         box.value = "abc"
         with pytest.raises(ValueError, match="thinking_level: abc is not a reasoning number"):
             body._collect()
-        select.value = "low"                    # a preset wins over a stale box
+        select.value = 0.2                      # a row (T1430: the grid's 0.2 · low) wins over a stale box
         await pilot.pause()
-        assert box.display is False and body._collect().thinking_level == "low"
+        assert box.display is False and body._collect().thinking_level == 0.2
 
 
 @pytest.mark.asyncio
@@ -401,8 +401,9 @@ async def test_pilot_settings_manual_number_shown_where_numbers_travel():
     async with a.run_test(size=(130, 46)) as pilot:
         body = await _open_settings_at_thinking(a, pilot)
         select = body.query_one("#f-thinking_level", Select)
-        assert "manual · 0.1" in [str(p) for p, _ in select._options]
-        assert body.query_one("#f-thinking_level-number", Input).value == "0.1"
+        # T1430: where Inkling's numbers travel, 0.1 is a row of the grid, not a manual number.
+        assert select.value == 0.1 and "0.1 · minimal" in [str(p) for p, _ in select._options]
+        assert body.query_one("#f-thinking_level-number", Input).display is False
         if shots := _shots():
             a.save_screenshot(filename="settings_manual_number_llama.svg", path=str(shots))
 
@@ -522,7 +523,9 @@ async def test_pilot_settings_thinking_select_shows_the_numbers():
         await pilot.pause()
         select = body.query_one("#f-thinking_level", Select)
         labels = [str(prompt) for prompt, _value in select._options]
-        assert "high · 0.9" in labels and "low · 0.2" in labels and "off · 0" in labels
+        # T1430: numbers travel here (llama.cpp shape), so the rows are the grid; the saved name stays a row.
+        assert "0.9 · high" in labels and "0.2 · low" in labels and "0 · off" in labels
+        assert "high · 0.9 (saved preset)" in labels
         select.focus()
         await pilot.press("enter")
         await pilot.pause()
@@ -548,8 +551,8 @@ def test_think_0_5_on_basalt_is_set_shown_as_0_5_and_sent_as_50():
     assert app.messages[-1] == ("Thinking level: 0.5 (sends reasoning_effort=50: this server counts a number "
                                 "in steps of 0.01).")
     rows = dict(misc._thinking_rows(app))
-    assert rows[0.5] == "manual · 0.5"
-    assert rows["high"] == "high · 0.9" and rows["minimal"] == "minimal · 0.1"
+    assert rows["0.5"] == "0.5" and 0.5 not in rows, "T1430: 0.5 is a row of the grid, not a manual row"
+    assert rows["0.9"] == "0.9 · high" and rows["0.1"] == "0.1 · minimal"
     assert rows[misc.NUMBER_ROW] == "number…  · type one (Any number from 0 to 0.99, in steps of 0.01.)"
 
 
@@ -579,7 +582,219 @@ async def test_pilot_basalt_think_0_5_shows_0_5_in_the_header_and_the_picker():
         await pilot.pause()
         assert isinstance(a.screen, PickerScreen)
         screen = a.export_screenshot()
-        for label in ("high · 0.9", "minimal · 0.1", "manual · 0.5"):
+        for label in ("0.9 · high", "0.1 · minimal", "0.5"):
             assert label.replace(" ", "&#160;") in screen or label in screen, f"{label!r} must be on screen"
         if shots := _shots():
             a.save_screenshot(filename="think_picker_inkling_basalt.svg", path=str(shots))
+
+
+# ── T1430: the number grid (Ryan 2026-11-26: "still not showing me the the fine thinking numbers the
+# 0.1-0.9 range") ────────────────────────────────────────────────────────────────────────────────
+
+
+def _basalt_app(level="high"):
+    return _App(_Backend(_inkling_basalt(), name="basalt", label="Basalt"), _inkling_basalt(), level=level)
+
+
+GRID = ["0.1", "0.2", "0.3", "0.4", "0.5", "0.6", "0.7", "0.8", "0.9", "0.99"]
+
+
+def test_basalt_inkling_picker_offers_off_then_every_tenth_then_0_99_each_naming_its_preset():
+    rows = misc._thinking_rows(_basalt_app())
+    ids = [level for level, _ in rows]
+    assert ids == ["off", *GRID, misc.NUMBER_ROW, "unset"]
+    labels = dict(rows)
+    assert labels["off"] == "0 · off"
+    assert labels["0.1"] == "0.1 · minimal" and labels["0.2"] == "0.2 · low"
+    assert labels["0.7"] == "0.7 · medium" and labels["0.9"] == "0.9 · high"
+    assert labels["0.99"] == "0.99 · xhigh, max"
+    assert [labels[n] for n in ("0.3", "0.4", "0.5", "0.6", "0.8")] == ["0.3", "0.4", "0.5", "0.6", "0.8"]
+
+
+@pytest.mark.parametrize("row,count", [(n, round(float(n) * 100)) for n in GRID])
+def test_picking_a_grid_row_stores_that_number_shows_it_and_sends_its_hundredths(row, count):
+    from litetui.effort_scale import effort_body, think_chip
+
+    app = _basalt_app()
+    misc._on_thinking_picked(app, row)
+    assert app.thinking_level == float(row)
+    assert think_chip(app) == f"think:{row}"
+    assert app.messages[-1] == (f"Thinking level: {row} (sends reasoning_effort={count}: this server counts a "
+                                "number in steps of 0.01).")
+    assert effort_body(_inkling_basalt(), app.thinking_level) == {"reasoning_effort": count}
+
+
+def test_picking_off_on_the_grid_sends_none_through_the_template():
+    from litetui.effort_scale import effort_body, think_chip
+
+    app = _basalt_app()
+    misc._on_thinking_picked(app, "off")
+    assert app.thinking_level == "off" and think_chip(app) == "think:off · 0"
+    assert effort_body(_inkling_basalt(), "off") == {"chat_template_kwargs": {"reasoning_effort": "none"}}
+
+
+def test_the_grid_picker_opens_on_the_number_a_saved_preset_sends():
+    assert misc._picker_current(_basalt_app("max")) == "0.99"
+    assert misc._picker_current(_basalt_app("medium")) == "0.7"
+    assert misc._picker_current(_basalt_app(0.4)) == "0.4"
+    assert misc._picker_current(_basalt_app("off")) == "off"
+    assert misc._picker_current(_basalt_app(None)) == "unset"
+
+
+def test_a_number_off_the_grid_keeps_its_manual_row_and_preset_names_stay_typeable():
+    app = _basalt_app(0.55)
+    assert dict(misc._thinking_rows(app))[0.55] == "manual · 0.55"
+    misc._cmd_think(app, "think", "high")
+    assert app.thinking_level == "high"
+    assert app.messages[-1] == "Thinking level: high (sends reasoning_effort='high' -> template level 0.9)."
+
+
+def test_models_without_a_fractional_number_wire_keep_their_named_levels():
+    """Brief: "Other models keep their named levels exactly as today"."""
+    ninfer_today = [level for level, _ in misc._thinking_rows(_App(_Backend(_inkling()), _inkling()))]
+    assert ninfer_today == ["off", "minimal", "low", "medium", "high", "xhigh", "max", misc.NUMBER_ROW, "unset"]
+    assert [level for level, _ in misc._thinking_rows(_App(_Backend(QWEN), QWEN))] == \
+        ["off", "low", "medium", "xhigh", "unset"]
+    deepseek = EffortScale(names=("low", "high", "max"), numbers={"low": 50, "high": 75, "max": 100},
+                           number_wire=True, template_read=True)
+    assert [level for level, _ in misc._thinking_rows(_App(_Backend(deepseek), deepseek))][:3] == \
+        ["low", "high", "max"]
+
+
+def test_the_scale_is_read_with_no_served_model():
+    """The snip: Basalt with nothing serving had no model_id, so the pack's template was never read and
+    the header said think:max. Now the reader is asked with None (Basalt: the chosen pack)."""
+    a = owned_app()
+    a.backend = _Backend(_inkling_basalt(), name="basalt", label="Basalt")
+    asked = []
+    a.backend.effort_scale = lambda model: asked.append(model) or _inkling_basalt()
+    a.model_id = ""
+    a.thinking_level = "max"
+    assert a._effort_scale_now() is not None and asked == [None]
+    from litetui.effort_scale import think_chip
+    assert think_chip(a) == "think:max · 0.99"
+    a._effort_scale_now()
+    assert asked == [None], "cached: read once"
+    a._effort_scale_now(fresh=True)
+    assert asked == [None, None], "fresh (a new pack was chosen) reads again"
+
+
+@pytest.mark.asyncio
+async def test_pilot_basalt_grid_picker_picture():
+    """The headless picture of the selector (LITETUI_T1398_SHOTS names the folder)."""
+    a = _real_app(_inkling_basalt(), level=0.4)
+    a.backend = _Backend(_inkling_basalt(), name="basalt", label="Basalt")
+    a._effort_scales = {a._effort_scale_key(): _inkling_basalt()}
+    async with a.run_test(size=(120, 40)) as pilot:
+        a.update_header()
+        await pilot.pause()
+        assert "think:0.4" in a.sub_title and "think:0.4 (" not in a.sub_title
+        misc._cmd_think(a, "think", "")
+        await pilot.pause()
+        assert isinstance(a.screen, PickerScreen)
+        screen = a.export_screenshot()
+        for label in ("0 · off", "0.3", "0.4", "0.7 · medium", "0.99 · xhigh, max"):
+            assert label.replace(" ", "&#160;") in screen or label in screen, f"{label!r} must be on screen"
+        if shots := _shots():
+            a.save_screenshot(filename="t1430_think_grid_inkling_basalt.svg", path=str(shots))
+
+
+# ── T1430 (Prefix e67b865e): the same grid in /settings and /modelcfg ───────────────────────────────
+
+GRID_ROWS = [("0 · off", "off"), ("0.1 · minimal", 0.1), ("0.2 · low", 0.2), ("0.3", 0.3), ("0.4", 0.4),
+             ("0.5", 0.5), ("0.6", 0.6), ("0.7 · medium", 0.7), ("0.8", 0.8), ("0.9 · high", 0.9),
+             ("0.99 · xhigh, max", 0.99)]
+
+
+def test_the_settings_select_offers_the_grid_and_keeps_a_saved_preset_or_off_grid_number():
+    from litetui.settings_screen import thinking_choices
+
+    basalt = _Backend(_inkling_basalt(), name="basalt", label="Basalt")
+    assert thinking_choices(basalt, "inkling", 0.4, _inkling_basalt()) == GRID_ROWS
+    assert thinking_choices(basalt, "inkling", "max", _inkling_basalt())[-1] == ("max · 0.99 (saved preset)", "max")
+    assert thinking_choices(basalt, "inkling", 0.55, _inkling_basalt())[-1] == ("manual · 0.55", 0.55)
+    # Every other model keeps its named levels exactly (NInfer-today Inkling, Qwen).
+    assert ("high · 0.9", "high") in thinking_choices(_Backend(_inkling()), "inkling", "high", _inkling())
+    assert ("0.4", 0.4) not in thinking_choices(_Backend(_inkling()), "inkling", "high", _inkling())
+
+
+def test_a_grid_number_is_a_plain_row_and_the_box_is_for_manual_numbers_only():
+    from litetui.settings_screen import MANUAL_THINKING, wants_number_box, with_manual_row
+
+    scale = _inkling_basalt()
+    assert wants_number_box(0.4, scale) is False and wants_number_box("0.4", scale) is False
+    assert wants_number_box(0.55, scale) is True and wants_number_box(MANUAL_THINKING, scale) is True
+    assert wants_number_box(0.4) is True, "no grid (no scale): a number is the box's, as before"
+    assert with_manual_row(GRID_ROWS, 0.4, scale)[-1] == ("manual number…", MANUAL_THINKING), \
+        "a grid number stored: 'manual number…' is still offered"
+    assert with_manual_row([("manual · 0.55", 0.55)], 0.55, scale)[-1] == ("manual · 0.55", 0.55)
+
+
+def _basalt_real_app(level):
+    a = _real_app(_inkling_basalt(), level=level)
+    a.backend = _Backend(_inkling_basalt(), name="basalt", label="Basalt")
+    a._effort_scales = {a._effort_scale_key(): _inkling_basalt()}
+    return a
+
+
+@pytest.mark.asyncio
+async def test_pilot_settings_thinking_grid_saves_a_row_and_still_takes_a_manual_number():
+    from textual.widgets import Input, Select
+
+    from litetui.settings_screen import MANUAL_THINKING
+
+    a = _basalt_real_app("high")
+    a.settings.thinking_level = 0.4
+    async with a.run_test(size=(130, 60)) as pilot:
+        body = await _open_settings_at_thinking(a, pilot)
+        select = body.query_one("#f-thinking_level", Select)
+        box = body.query_one("#f-thinking_level-number", Input)
+        options = [(str(p), v) for p, v in select._options]
+        assert options[:11] == GRID_ROWS and options[-1] == ("manual number…", MANUAL_THINKING)
+        assert select.value == 0.4 and box.display is False, "a grid number is a row, not the box"
+        select.value = 0.7
+        await pilot.pause()
+        assert box.display is False and body._collect().thinking_level == 0.7
+        select.value = MANUAL_THINKING
+        await pilot.pause()
+        assert box.display is True
+        box.value = "0.55"
+        assert body._collect().thinking_level == 0.55
+        box.value = "0.555"
+        with pytest.raises(ValueError, match="between this server's steps"):
+            body._collect()
+        select.value = 0.4
+        await pilot.pause()
+        select.focus()
+        await pilot.press("enter")
+        await pilot.pause()
+        if shots := _shots():
+            a.save_screenshot(filename="t1430_settings_grid_inkling_basalt.svg", path=str(shots))
+        # Textual's Select list shows ten rows and scrolls: 0.99 and "manual number…" are one scroll down
+        # (asserted in the options above).
+        screen = a.export_screenshot()
+        for label in ("0 · off", "0.3", "0.7 · medium", "0.9 · high"):
+            assert label.replace(" ", "&#160;") in screen or label in screen, f"{label!r} must be on screen"
+
+
+@pytest.mark.asyncio
+async def test_pilot_modelcfg_thinking_grid_saves_a_row():
+    from textual.widgets import Input, Select
+
+    a = _basalt_real_app("high")
+    a.settings.model_infer_overrides = {}
+    async with a.run_test(size=(130, 46)) as pilot:
+        body = await _open_modelcfg_inference(a, pilot)
+        select = body.query_one("#inf-reasoning_effort", Select)
+        box = body.query_one("#inf-reasoning_effort-number", Input)
+        labels = [str(p) for p, _ in select._options]
+        for label, _value in GRID_ROWS:
+            assert label in labels, f"{label!r} missing from /modelcfg: {labels}"
+        assert "manual number…" in labels and "high · 0.9" not in labels
+        select.value = 0.3
+        await pilot.pause()
+        assert box.display is False, "a grid number is a row, not the box"
+        body.action_apply()
+        for _ in range(4):
+            await pilot.pause()
+        assert a.settings.model_infer_overrides["inkling-2-mini"]["reasoning_effort"] == 0.3

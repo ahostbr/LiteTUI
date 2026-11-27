@@ -306,6 +306,37 @@ def number_refusal(number, scale: EffortScale | None, backend_label: str = "this
     return scale.refuse_number(number)
 
 
+#: The numbers the /think picker offers as levels for a fractional scale (T1430).
+FRACTION_GRID: tuple[float, ...] = (0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 0.99)
+
+
+def number_grid(scale: EffortScale | None) -> list[tuple[float, str]]:
+    """T1430 (Ryan 2026-11-26: "still not showing me the the fine thinking numbers the 0.1-0.9 range").
+
+    For a template whose map is a fraction (Inkling: 0 to 0.99) on a server that carries a number, the
+    numbers to offer as levels, each labelled with the template's own names for it ("0.7 · medium").
+    Empty for every other scale: those keep their named levels (DeepSeek's whole 50/75/100, Qwen's
+    names, a server that can send only the map's own values)."""
+    if scale is None or not scale.template_read or not scale.number_wire or not scale.numbers:
+        return []
+    if scale.integer_only or max(float(v) for v in scale.numbers.values()) > 1:
+        return []
+    rows = []
+    for number in FRACTION_GRID:
+        if scale.refuse_number(number) is not None:
+            continue
+        names = [n for n in EFFORT_ORDER if n in scale.names and n in scale.numbers
+                 and float(scale.numbers[n]) == number]
+        rows.append((number, _show(number) + (f" · {', '.join(names)}" if names else "")))
+    return rows
+
+
+def on_grid(value, scale: EffortScale | None) -> bool:
+    """Is `value` one of `number_grid(scale)`'s numbers (a row of its own, not a manual number)?"""
+    value = as_level(value)
+    return is_number(value) and any(float(number) == float(value) for number, _ in number_grid(scale))
+
+
 def number_hint(scale: EffortScale | None) -> str:
     """What may be typed for this model, said before it is typed."""
     if scale is None or not scale.template_read or not scale.numbers:

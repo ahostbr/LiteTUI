@@ -7,8 +7,8 @@ because every tools-off refusal names that key to the user and to the model.
 """
 from functools import partial
 
-from litetui.effort_scale import (NONE, app_scale, as_level, backend_label, describe, is_number, number_hint,
-                                  number_refusal, parse_number)
+from litetui.effort_scale import (NONE, app_scale, as_level, backend_label, describe, is_number, number_grid,
+                                  number_hint, number_refusal, parse_number)
 from litetui.picker import pick
 from litetui.settings import THINKING_LEVELS
 from litetui.thinking_capabilities import backend_levels
@@ -113,9 +113,17 @@ def _thinking_rows(app) -> list[tuple[str, str]]:
                 for level in levels] + [(UNSET, "Default · use the backend default")]
     scale = app_scale(app)
     if scale is not None and scale.template_read:
-        # T1398: exactly the levels this model's template takes, each with the number it sends.
-        rows = [("off" if name == NONE else name, scale.label(name)) for name in scale.names]
-        if is_number(as_level(app.thinking_level)):
+        grid = number_grid(scale)
+        if grid:
+            # T1430: a fractional template on a server that carries a number (Inkling on Basalt): the
+            # levels ARE the numbers, 0 (off), 0.1 .. 0.9 and 0.99, each naming its preset if it has one.
+            rows = ([("off", "0 · off")] if NONE in scale.names else []) + [
+                (format(number, "g"), label) for number, label in grid]
+        else:
+            # T1398: exactly the levels this model's template takes, each with the number it sends.
+            rows = [("off" if name == NONE else name, scale.label(name)) for name in scale.names]
+        current = as_level(app.thinking_level)
+        if is_number(current) and not any(float(number) == float(current) for number, _ in grid):
             rows.append((app.thinking_level,
                          "manual · " + describe(app.thinking_level, scale)[0].removeprefix("think:")))
         if scale.numbers:
@@ -152,7 +160,25 @@ def _on_thinking_picked(app, level: str | None) -> None:
     if level == NUMBER_ROW:
         _ask_thinking_number(app)
         return
+    if isinstance(level, str) and parse_number(level) is not None:
+        _apply_thinking_number(app, parse_number(level))      # T1430: a number row of the grid
+        return
     _apply_thinking_level(app, level)
+
+
+def _picker_current(app):
+    """The row the /think picker opens on. On a number grid a saved preset name opens on its number
+    ("max" -> 0.99) and a saved number on its own row."""
+    if app.thinking_level is None:
+        return UNSET
+    scale = app_scale(app)
+    level = as_level(app.thinking_level)
+    if not number_grid(scale):
+        return app.thinking_level
+    if is_number(level):
+        return format(level, "g") if any(float(n) == float(level) for n, _ in number_grid(scale)) else level
+    number = scale.number_for(level)
+    return format(number, "g") if level not in ("off", NONE) and number is not None else app.thinking_level
 
 
 def _ask_thinking_number(app) -> None:
@@ -192,7 +218,7 @@ def _cmd_think(app, name: str, arg: str) -> None:
             "Thinking level",
             _thinking_rows(app),
             partial(_on_thinking_picked, app),
-            current=app.thinking_level if app.thinking_level is not None else UNSET,
+            current=_picker_current(app),
         )
     elif _as_number(arg) is not None:
         _apply_thinking_number(app, _as_number(arg))
@@ -205,8 +231,13 @@ def _cmd_think(app, name: str, arg: str) -> None:
 
 
 def _typed_levels(app) -> list[str]:
-    """What `/think <word>` takes: the picker's level rows (the number row is the picker's own)."""
-    return [str(level) for level, _ in _thinking_rows(app) if level != NUMBER_ROW]
+    """What `/think <word>` takes: the picker's level rows (the number row is the picker's own), and on a
+    number grid the template's preset names too (`/think high` still works)."""
+    levels = [str(level) for level, _ in _thinking_rows(app) if level != NUMBER_ROW]
+    scale = app_scale(app)
+    if number_grid(scale):
+        levels += [name for name in scale.names if name != NONE and name not in levels]
+    return levels
 
 
 #: The /think picker row that asks for a manual number (an id no level can have).

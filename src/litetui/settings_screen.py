@@ -111,6 +111,17 @@ NOT_A_SETTINGS_CONTROL = frozenset({
 MANUAL_THINKING = "manual"
 
 
+def grid_choices(scale) -> list:
+    """T1430: `effort_scale.number_grid` as Select rows, "0 · off" first ("0.7 · medium", 0.7); [] for a
+    scale with no grid (those keep their named levels). Shared by Settings and /modelcfg, as /think's."""
+    from litetui.effort_scale import NONE, number_grid
+
+    grid = number_grid(scale)
+    if not grid:
+        return []
+    return ([("0 · off", "off")] if NONE in scale.names else []) + [(label, number) for number, label in grid]
+
+
 def thinking_choices(backend, model_id, current, scale=None):
     """(label, value) rows the Thinking level select offers on `backend`.
 
@@ -137,13 +148,17 @@ def thinking_choices(backend, model_id, current, scale=None):
             choices.append((f"{current} (saved; not supported by this model)", current))
         return choices
     if scale is not None and scale.template_read:
-        from litetui.effort_scale import describe, is_number
+        from litetui.effort_scale import describe, is_number, on_grid
 
-        choices = [(scale.label(name), "off" if name == "none" else name) for name in scale.names]
+        grid = grid_choices(scale)
+        choices = grid or [(scale.label(name), "off" if name == "none" else name) for name in scale.names]
         values = [value for _, value in choices]
         if is_number(current):
-            chip = describe(current, scale)[0].removeprefix("think:")
-            choices.append((f"manual · {chip}", current))
+            if not on_grid(current, scale):
+                chip = describe(current, scale)[0].removeprefix("think:")
+                choices.append((f"manual · {chip}", current))
+        elif grid and current in scale.names:
+            choices.append((f"{scale.label(current)} (saved preset)", current))   # T1430: "max" stays selectable
         elif current and current not in values:
             chip = describe(current, scale)[0].removeprefix("think:")
             choices.append((f"{chip} (saved; this model's template has no {current!r})", current))
@@ -169,21 +184,23 @@ def thinking_choices(backend, model_id, current, scale=None):
 # Used by Settings (Thinking level, Compact thinking level) and /modelcfg (the per-model override).
 
 
-def with_manual_row(choices, stored):
-    """`choices` plus the "manual number…" row, unless the stored value is already a number."""
-    from litetui.effort_scale import as_level, is_number
+def with_manual_row(choices, stored, scale=None):
+    """`choices` plus the "manual number…" row, unless the stored value is already a manual number
+    (its own "manual · 0.1" row shows the box). A number on the T1430 grid is a plain row: it gets one."""
+    from litetui.effort_scale import as_level, is_number, on_grid
 
     choices = list(choices)
-    if not is_number(as_level(stored)):
+    if not is_number(as_level(stored)) or on_grid(stored, scale):
         choices.append(("manual number…", MANUAL_THINKING))
     return choices
 
 
-def wants_number_box(value) -> bool:
-    """Does this Select value mean "the number in the box"? (the manual row, or a stored number)"""
-    from litetui.effort_scale import as_level, is_number
+def wants_number_box(value, scale=None) -> bool:
+    """Does this Select value mean "the number in the box"? (the manual row, or a stored number that
+    is not a row of `scale`'s grid: a grid number is saved as chosen, like a preset)"""
+    from litetui.effort_scale import as_level, is_number, on_grid
 
-    return value == MANUAL_THINKING or is_number(as_level(value))
+    return value == MANUAL_THINKING or (is_number(as_level(value)) and not on_grid(value, scale))
 
 
 def thinking_number_box(box_id: str, stored, scale, disabled: bool = False):
@@ -194,7 +211,7 @@ def thinking_number_box(box_id: str, stored, scale, disabled: bool = False):
     box = HostedInput(value=format(stored, "g") if is_number(stored) else "",
                       placeholder=f"a number — {number_hint(scale)}",
                       id=box_id, classes="set-input", disabled=disabled)
-    box.display = is_number(stored)
+    box.display = wants_number_box(stored, scale)
     return box
 
 
@@ -789,7 +806,9 @@ class SettingsBody(Widget):
     # manual_number) are shared with /modelcfg's per-model override (plugins/model_switch.py).
 
     def _thinking_choices_with_manual(self, name: str):
-        return with_manual_row(self._thinking_choices(name), getattr(self._start, name))
+        from litetui.effort_scale import app_scale
+
+        return with_manual_row(self._thinking_choices(name), getattr(self._start, name), app_scale(self.app))
 
     def _thinking_number_box(self, name: str):
         from litetui.effort_scale import app_scale
@@ -806,13 +825,15 @@ class SettingsBody(Widget):
             return
         found = self.query(f"#f-{name}-number")
         if found:
-            found.first().display = wants_number_box(event.value)
+            from litetui.effort_scale import app_scale
+
+            found.first().display = wants_number_box(event.value, app_scale(self.app))
 
     def _thinking_value(self, name: str, chosen):
-        """The value a Thinking level Select saves: a preset as chosen, or the number in its box."""
+        """The value a Thinking level Select saves: a preset (or grid number) as chosen, or the number in its box."""
         from litetui.effort_scale import app_scale, backend_label
 
-        if not wants_number_box(chosen):
+        if not wants_number_box(chosen, app_scale(self.app)):
             return chosen
         return manual_number(name, self.query_one(f"#f-{name}-number", Input).value,
                              getattr(self._start, name), app_scale(self.app), backend_label(self.app))

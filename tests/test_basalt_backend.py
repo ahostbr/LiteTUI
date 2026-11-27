@@ -418,6 +418,41 @@ def test_a_turn_on_a_served_inkling_sends_the_name_or_the_count_never_a_float(se
     assert sent("off") == {"chat_template_kwargs": {"reasoning_effort": "none"}}
 
 
+@pytest.mark.parametrize("n", [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 0.99])
+def test_every_number_of_the_t1430_grid_goes_out_as_its_hundredths(server, tmp_path, n):
+    """Basalt main's parser takes a whole 1-100 (serve/frontend.py:101-102) and the Inkling dialect reads it
+    as hundredths (serve/models/inkling2.py:531-535); a float is a 400. Also as the text a launch flag stores."""
+    root, pack = _inkling_pack(tmp_path)
+    server["props"] = {"chat_template": INKLING_TEMPLATE, "model_alias": INKLING_MODEL, "model_path": str(pack),
+                       "basalt": {}}
+    scale = _backend(server["host"], basalt_root=root).effort_scale(INKLING_MODEL)
+    for level in (n, str(n)):
+        req = turn_engine.TurnEngine.chat_request(
+            model_id=INKLING_MODEL, messages=[], tools_enabled=False, max_tokens_tools=1, max_tokens_chat=1,
+            request_overrides={}, thinking_level=level, backend_name="basalt", effort_scale=scale)
+        sent = req.get("extra_body", {})["reasoning_effort"]
+        assert sent == round(n * 100) and type(sent) is int
+
+
+def test_the_snip_basalt_with_nothing_serving_still_shows_the_grid_and_the_number(tmp_path):
+    """Ryan's snip (T1430): Basalt, Inkling chosen, nothing serving, saved level max. The header said
+    think:max and /think listed names: with no model_id the chosen pack's template was never read."""
+    from _owned_seat import owned_app
+
+    from litetui.effort_scale import think_chip
+    from litetui.plugins import misc
+
+    root, _pack = _inkling_pack(tmp_path)
+    a = owned_app()
+    a.backend = BasaltBackend(Settings(backend="basalt", basalt_root=root, basalt_host="http://127.0.0.1:9"))
+    a.model_id = ""
+    a.thinking_level = "max"
+    assert a._effort_scale_now() is not None
+    assert think_chip(a) == "think:max · 0.99"
+    ids = [level for level, _ in misc._thinking_rows(a)]
+    assert ids[:12] == ["off", "0.1", "0.2", "0.3", "0.4", "0.5", "0.6", "0.7", "0.8", "0.9", "0.99", misc.NUMBER_ROW]
+
+
 def test_strata_answers_the_same_question_from_its_configs_model_name(tmp_path):
     root = tmp_path / "strata"
     root.mkdir()
