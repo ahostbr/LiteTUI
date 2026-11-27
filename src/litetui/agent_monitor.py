@@ -442,9 +442,11 @@ class MonitorService:
                 mon = Monitor(mid, "command", command, label, timeout_ms / 1000, convo,
                               self._deliver, alive, log_path=log)
                 argv, shell = self._argv(command)
+                from litetui.plugins.core_tools import bash_env
                 try:
+                    # T1397-B: the bash tool's own shell, with the environment Git's launcher gave it.
                     mon.begin_command(argv, shell=shell, cwd=str(Path.cwd()),
-                                      env=_process_env(self._agent_id))
+                                      env=bash_env(argv[0] if not shell else None, _process_env(self._agent_id)))
                 except OSError as e:
                     return f"[error] monitor: {type(e).__name__}: {e}"
                 self._monitors[mid] = mon
