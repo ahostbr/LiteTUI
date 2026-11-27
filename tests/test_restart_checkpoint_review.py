@@ -216,11 +216,13 @@ async def test_hold_blocks_new_and_already_scheduled_card_summary(runtime, monke
     prepare(runtime)
     runtime.run_worker = Mock()
     runtime.settings = SimpleNamespace(lmstudio_graded_thinking_models=(), compact_max_tokens=10)
-    card = SimpleNamespace(summary_done=False, summary='', answer_text='answer', model_name='fixture-model')
+    titles = []
+    card = SimpleNamespace(summary_done=False, summary='', answer_text='answer', model_name='fixture-model',
+                           set_summary=titles.append)
     transport = Mock()
     monkeypatch.setattr(app_module.model_transport, 'for_app', transport)
     LiteTUI._kick_card_summary(runtime, card)
-    await LiteTUI._summarise_card(runtime, card, 'fixture-model', 'answer')
+    # T1433: a card title never sends a request (held or not); it is the card's own text.
     runtime.run_worker.assert_not_called()
     transport.assert_not_called()
-    assert not card.summary_done
+    assert titles == ['answer']
