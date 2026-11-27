@@ -213,10 +213,6 @@ GLASSBOX_MIN_INTERVAL_S = 0.2
 
 # Loaded from prompts/compact.md — edit the FILE; it is read at import.
 COMPACT_PROMPT = load_prompt("compact")
-# Loaded at import so a missing file fails at boot, not on the first finished
-# turn. The {answer} placeholder is substituted per call.
-CARD_SUMMARY_PROMPT = load_prompt("card-summary")
-
 # The post-compaction ping. User role on purpose: it is the nudge that says
 # "keep going", and the standing-by exit is what keeps the model from
 # inventing a task to resume when there was none - a ping without an exit
@@ -529,6 +525,21 @@ def _first_sentence(raw: object) -> str:
     text = " ".join(str(raw or "").split())
     m = re.match(r"(.+?[.!?])(?:\s|$)", text)
     return (m.group(1) if m else text).strip()
+
+
+def _first_line(answer: str) -> str:
+    """A card's own title when it brought no <recap> (T1433): its first line of prose outside any
+    code fence, with heading/quote/bullet markers and emphasis or code marks taken off."""
+    fenced = False
+    for line in str(answer or "").splitlines():
+        line = line.strip()
+        if line.startswith(("```", "~~~")):
+            fenced = not fenced
+            continue
+        line = re.sub(r"\*\*|__|`", "", line.lstrip("#>*-+ ")).strip()
+        if line and not fenced:
+            return line
+    return ""
 
 
 def _detail_sentence(raw: object, *, limit: int = 200) -> str:
@@ -7883,108 +7894,37 @@ class LiteTUI(App):
         self._follow_generation += 1
         return self._follow_generation
 
-    # ── one-line card summary ────────────────────────────────────────────
+    # ── one-line card title ───────────────────────────────────────────────
     #
-    # THE USER, 2026-09-16: when a response finishes, ask the SAME model for a
-    # one-line summary with reasoning off and title the collapsed card
-    # "<summary> - <model>".
+    # T1433. Ryan 2026-11-26 (via Sentinel b5049a76): "ya so that summary thing was only ever really
+    # meant to be in the system prompt to depend on the model to output the tags ... i deft never
+    # wanted a extra call for it ... and espically one that clears the cache".
     #
-    # It is a SIDE CALL, on the same terms as the tool-summary fold above: its
-    # messages are built here and never appended to `self.conversation`, so the
-    # model is not told it said something it did not, and the next turn is not
-    # blocked waiting for it.
+    # This used to ask the SAME model for a one-line summary after every settled card and every tool
+    # round (purpose "card-summary"): a ~160-180-token request that, on a one-slot engine (Basalt),
+    # evicted the conversation's cached prefix, so the next turn re-read all of it (~330K tokens,
+    # ~6 min). The title now comes from the model's own <recap>, which the system prompt asks for and
+    # recap.py parses, or else from the card's own text. Nothing is sent.
 
     def _kick_card_summary(self, card) -> None:
-        """Fire-and-forget the summary for one finished card."""
-        if restart_checkpoint.is_held(self):
-            return
-        if getattr(self.backend, "owns_native_turns", False):
-            return  # Native context never calls a legacy summary model.
+        """Title a settled card that brought no <recap>, from its own text. Sends no request."""
         if card is None or getattr(card, "summary_done", False):
             return
+        card.summary_done = True
         if card.summary:                      # restored from the store already
-            card.summary_done = True
             return
         answer = (getattr(card, "answer_text", "") or "").strip()
-        if not answer:
-            # A THINKING-ONLY CARD TITLES ITSELF FROM ITS TRACE. the user,
-            # 2026-09-18: "we need to figure out the just thinking ones how
-            # to display something for those also". There is no answer to
-            # summarise, and a side call over hidden reasoning would describe
-            # work the card does not show - but the trace's first sentence
-            # IS the model saying what it is about to do, so it is the
-            # header, at no cost. A card with neither stays on the model
-            # name (pure tool turn, or cancelled empty).
-            thought = _first_sentence(getattr(card.thinking, "source", ""))
-            if thought:
-                card.set_summary(f"thinking: {thought}")
-                card.summary_done = True
+        if answer:
+            card.set_summary(_first_line(answer))
             return
-        card.summary_done = True
-        # 🔴 NOT group "chat". `_stream` is exclusive there, so a worker started
-        # in that group would CANCEL the very turn that just finished and asked
-        # for this summary. Its own group, non-exclusive, so several summaries
-        # can be in flight while the user carries on typing.
-        self.run_worker(
-            self._summarise_card(card, card.model_name, answer),
-            group="card-summary", exclusive=False, exit_on_error=False,
-        )
-
-    async def _summarise_card(self, card, model: str, answer: str) -> None:
-        """Ask `model` for one line about `answer`, then title `card` with it.
-
-        ⬜ THE CARD AND THE MODEL ARE ARGUMENTS, NOT LOOKUPS. This completes
-        asynchronously, so by the time it returns the user may have switched
-        models or sent three more turns. Reading `self.model_id` or "the last
-        card" here is exactly how a late reply stamps the wrong card. Both are
-        captured at kick time and the result goes back to that card alone.
-
-        Any failure leaves the model-name header standing. A summary is a
-        convenience; it must never be able to break a finished turn.
-        """
-        if restart_checkpoint.is_held(self):
-            return
-        try:
-            levels = (self.backend.reasoning_levels(model)
-                      if hasattr(self.backend, "reasoning_levels") else ())
-            effort = side_call_reasoning_effort(
-                "off", self.backend.name, model,
-                self.settings.lmstudio_graded_thinking_models, levels,
-            )
-            extra = {"reasoning_effort": effort} if effort else {}
-            # T1398: on the current model the scale decides "off" (Inkling's "none" through the
-            # template, which a top-level "none" on llama.cpp would have erased).
-            from litetui.effort_scale import effort_body
-            card_scale = await asyncio.to_thread(getattr(self, "_effort_scale_now", lambda: None)) if model == self.model_id else None
-            if card_scale is not None:
-                extra = effort_body(card_scale, "off")
-            resp = await model_transport.for_app(self).create(
-                # 🔴 NOT PART OF THE TURN (T821). This side call used to be
-                # indistinguishable from a completion at the transport, so a
-                # test counting `create` calls counted it as one.
-                purpose="card-summary",
-                # Same sentinel the main paths use: with nothing selected,
-                # name "local-model" and let the server resolve it. Sending ""
-                # here would make the side call the one request in the app that
-                # does not follow that convention.
-                model=model or self.model_id or "local-model",
-                messages=[{
-                    "role": "user",
-                    "content": self._ordinary_prompt_text("card-summary", fresh=True).replace("{answer}", answer),
-                }],
-                # Reuses the compact budget rather than minting another literal,
-                # same reasoning as the tool-summary fold.
-                max_tokens=self.settings.compact_max_tokens,
-                extra_body=extra,
-            )
-            text = (resp.choices[0].message.content or "").strip()
-        except Exception as exc:
-            runtime_log.record("card_summary.failed", error=str(exc)[:200])
-            return
-        if not card.is_mounted:        # conversation cleared while it was in flight
-            return
-        card.set_summary(text)
-        self._persist_card_summary(card, text)
+        # A THINKING-ONLY CARD TITLES ITSELF FROM ITS TRACE. the user,
+        # 2026-09-18: "we need to figure out the just thinking ones how
+        # to display something for those also". The trace's first sentence
+        # IS the model saying what it is about to do. A card with neither
+        # stays on the model name (pure tool turn, or cancelled empty).
+        thought = _first_sentence(getattr(card.thinking, "source", ""))
+        if thought:
+            card.set_summary(f"thinking: {thought}")
 
     @staticmethod
     def _card_summary_key(answer: str) -> str:
@@ -7994,19 +7934,6 @@ class LiteTUI(App):
         an index would re-point a stored summary at a different reply.
         """
         return hashlib.sha1((answer or "").strip().encode("utf-8")).hexdigest()[:16]
-
-    def _persist_card_summary(self, card, summary: str) -> None:
-        """Keep the summary so reopening does not pay for it twice."""
-        answer = (getattr(card, "answer_text", "") or "").strip()
-        if not (answer and summary):
-            return
-        try:
-            self.store.record_card_summary(
-                self._card_summary_key(answer), summary, card.model_name
-            )
-        except Exception as exc:
-            # A summary that cannot be filed is still a summary on screen.
-            runtime_log.record("card_summary.persist_failed", error=str(exc)[:200])
 
     def _autocollapse_offscreen(self, log) -> None:
         """Fold settled cards that have scrolled above the viewport.
@@ -10199,7 +10126,7 @@ class LiteTUI(App):
                 # The settle path ran once per TURN, so every card that ended
                 # in a tool call kept its model-name header for good. This
                 # round's card is finished: its text is on screen and in the
-                # conversation, and it costs one side call while the tool
+                # conversation, and its title costs no request (T1433) while the tool
                 # runs. Not in `_assistant_bubble`: the round boundary there
                 # cannot tell a finished card from a draft the completion
                 # hook just rejected, and a rejected draft never gets a line.

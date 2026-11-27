@@ -1,12 +1,10 @@
-"""One-line card summary: the side call, the binding, and persistence.
+"""One-line card title: from the model's own <recap>, else the card's own text. NEVER a request.
 
-THE USER, 2026-09-16: when a response finishes, ask the SAME model for a one-line
-summary with reasoning off, and title the card "<summary> - <model>".
-
-The property this file exists to protect is the BINDING. The call completes
-asynchronously, so by the time it returns the user may have switched models or
-sent more turns. A summary that lands on "the current card" instead of the card
-it was asked about is the defect that would look like the feature working.
+T1433. Ryan 2026-11-26 (via Sentinel b5049a76): "ya so that summary thing was only ever really
+meant to be in the system prompt to depend on the model to output the tags ... i deft never wanted
+a extra call for it ... and espically one that clears the cache". The side call this file used to
+protect (purpose "card-summary", 2026-09-16) is gone: on a one-slot engine it evicted the whole
+cached conversation. What stays: the title on every finished card, and stored summaries on reopen.
 """
 
 import json
@@ -67,121 +65,30 @@ class TestKey:
         assert k("one") != k("two")
 
 
-@pytest.mark.asyncio
-async def test_summary_titles_the_card_that_asked_for_it(monkeypatch):
-    app = _app()
-    async with app.run_test(size=(100, 20)) as pilot:
-        card = AssistantMessage()
-        card.set_model_name("qwen3-30b")
-        app.query_one("#chat-log").mount(card)
-        await pilot.pause()
-
-        async def fake_create(**kw):
-            return _Resp("Explained the parkour component")
-        monkeypatch.setattr(app_mod.model_transport, "for_app",
-                            lambda _a: type("T", (), {"create": staticmethod(fake_create)})())
-
-        await app._summarise_card(card, "qwen3-30b", "some long answer")
-        assert card.border_title.endswith("Explained the parkour component - qwen3-30b")
-
-
-@pytest.mark.asyncio
-async def test_card_summary_uses_lowest_model_effort_when_off_is_unsupported(monkeypatch):
-    app = _app()
-    seen = []
-    app._backend = type('Backend', (), {
-        'name': 'free', 'reasoning_levels': lambda self, model: ['high', 'low'],
-        'shutdown': lambda self: None,
-    })()
-    async with app.run_test(size=(100, 20)) as pilot:
-        card = AssistantMessage()
-        app.query_one('#chat-log').mount(card)
-        await pilot.pause()
-
-        async def create(**kw):
-            seen.append(kw)
-            return _Resp('title')
-        monkeypatch.setattr(app_mod.model_transport, 'for_app',
-                            lambda _a: type('T', (), {'create': staticmethod(create)})())
-        await app._summarise_card(card, 'qwen', 'answer')
-    assert seen[0]['extra_body']['reasoning_effort'] == 'low'
-
-
-@pytest.mark.asyncio
-async def test_a_late_summary_cannot_stamp_a_newer_card(monkeypatch):
-    """THE BINDING. Two cards, two models; the FIRST card's summary lands last.
-
-    It must title card one with model one, leaving card two untouched - even
-    though the app's own `model_id` has moved on.
-    """
-    app = _app()
-    async with app.run_test(size=(100, 20)) as pilot:
-        first = AssistantMessage(); first.set_model_name("model-A")
-        second = AssistantMessage(); second.set_model_name("model-B")
-        log = app.query_one("#chat-log")
-        log.mount(first); log.mount(second)
-        await pilot.pause()
-
-        app.model_id = "model-B"          # the user switched models meanwhile
-        seen = {}
-
-        async def fake_create(**kw):
-            seen["model"] = kw.get("model")
-            return _Resp("First card answer")
-        monkeypatch.setattr(app_mod.model_transport, "for_app",
-                            lambda _a: type("T", (), {"create": staticmethod(fake_create)})())
-
-        await app._summarise_card(first, "model-A", "answer one")
-
-        assert seen["model"] == "model-A", "must ask the model that answered, not the current one"
-        assert "First card answer" in first.border_title
-        assert "model-A" in first.border_title
-        assert second.summary is None, "a late summary must not touch another card"
-
-
-@pytest.mark.asyncio
-async def test_failure_leaves_the_model_name_standing(monkeypatch):
-    app = _app()
-    async with app.run_test(size=(100, 20)) as pilot:
-        card = AssistantMessage(); card.set_model_name("qwen3-30b")
-        app.query_one("#chat-log").mount(card)
-        await pilot.pause()
-
-        async def boom(**kw):
-            raise RuntimeError("backend down")
-        monkeypatch.setattr(app_mod.model_transport, "for_app",
-                            lambda _a: type("T", (), {"create": staticmethod(boom)})())
-
-        await app._summarise_card(card, "qwen3-30b", "answer")
-        assert card.summary is None
-        assert card.border_title.endswith("qwen3-30b")
-
-
-@pytest.mark.asyncio
-async def test_empty_reply_leaves_the_model_name_standing(monkeypatch):
-    app = _app()
-    async with app.run_test(size=(100, 20)) as pilot:
-        card = AssistantMessage(); card.set_model_name("qwen3-30b")
-        app.query_one("#chat-log").mount(card)
-        await pilot.pause()
-
-        async def empty(**kw):
-            return _Resp("   ")
-        monkeypatch.setattr(app_mod.model_transport, "for_app",
-                            lambda _a: type("T", (), {"create": staticmethod(empty)})())
-
-        await app._summarise_card(card, "qwen3-30b", "answer")
-        assert card.summary is None
-        assert card.border_title.endswith("qwen3-30b")
-
 
 class TestKick:
-    def test_no_answer_text_never_asks(self):
+    def test_a_card_without_a_recap_is_titled_from_its_own_first_line(self, monkeypatch):
+        app = _app()
+        monkeypatch.setattr(app_mod.model_transport, "for_app",
+                            lambda _a: pytest.fail("a card title must never send a request"))
+        scheduled = []
+        monkeypatch.setattr(app, "run_worker", lambda *a, **k: scheduled.append(a))
+        card = AssistantMessage()
+        card.set_model_name("qwen3-30b")
+        card.answer_text = "## Fixed the parser\n\nIt reads each line once now."
+        app._kick_card_summary(card)
+        assert scheduled == []
+        assert card.summary == "Fixed the parser" and card.summary_done is True
+        assert card.border_title.endswith("Fixed the parser - qwen3-30b")
+
+    def test_no_answer_and_no_trace_keeps_the_model_name(self):
         app = _app()
         card = AssistantMessage()
+        card.set_model_name("qwen3-30b")
         card.answer_text = ""
         app._kick_card_summary(card)          # must not raise, must not schedule
-        assert card.summary_done is False
+        assert card.summary is None
+        assert card.border_title.endswith("qwen3-30b")
 
     def test_an_already_summarised_card_is_not_reasked(self):
         app = _app()
@@ -226,20 +133,15 @@ class TestPersistence:
 
 
 class TestCardinality:
-    """Exactly one summary request per settled card, and never a second.
-
-    `all(m == sentinel for m in sent)` in test_chat_ready_call_sites cannot
-    express this - it is a membership check and passes on an empty list. The
-    count belongs here, where the worker can be awaited deterministically.
+    """No request for a settled card, ever: not the first settle, not a second (T1433).
 
     The scheduling is intercepted rather than waited on: `workers.wait_for_
     complete()` waits for EVERY worker the app owns, several of which are
-    long-lived, so it hangs instead of settling. Capturing the coroutine keeps
-    `_kick_card_summary`'s guards under test while making completion exact.
+    long-lived, so it hangs instead of settling.
     """
 
     @pytest.mark.asyncio
-    async def test_one_request_per_card_and_no_repeat(self, monkeypatch):
+    async def test_no_request_per_card_and_no_repeat(self, monkeypatch):
         app = _app()
         async with app.run_test(size=(100, 20)) as pilot:
             card = AssistantMessage()
@@ -264,13 +166,12 @@ class TestCardinality:
             app._kick_card_summary(card)
             for coro in scheduled:
                 await coro
-            assert calls == ["model-A"], f"expected exactly one summary call: {calls!r}"
+            assert calls == [] and scheduled == [], f"a settled card sent a request: {calls!r}"
+            assert card.summary == "an answer worth one line"
 
-            # A second settle (or a redraw) must not pay for it again.
-            scheduled.clear()
+            # A second settle (or a redraw) changes nothing either.
             app._kick_card_summary(card)
-            assert scheduled == [], "a second kick scheduled another request"
-            assert calls == ["model-A"], f"summary was requested twice: {calls!r}"
+            assert scheduled == [] and calls == []
 
     @pytest.mark.asyncio
     async def test_restored_card_makes_no_request(self, monkeypatch):
@@ -401,7 +302,7 @@ def _probe(n):
 @pytest.mark.asyncio
 async def test_every_finished_card_in_a_turn_gets_its_line(monkeypatch, tmp_path):
     """Round 1: answer + tool call. Round 2: thinking only + tool call.
-    Round 3: the final answer. Before: one side call, for round 3 alone."""
+    Round 3: the final answer. Every card gets its line, and no side call is made (T1433)."""
     monkeypatch.setattr(paths, "CONVO_DIR", tmp_path)
     app = _app()
     app.settings = Settings(tools_enabled=True, tool_iterations=5,
@@ -452,7 +353,7 @@ async def test_every_finished_card_in_a_turn_gets_its_line(monkeypatch, tmp_path
 
     assert len(cards) == 3, ([c.answer_text for c in cards], said)
     assert all(c.settled for c in cards)
-    assert len(summaries) == 2, summaries          # rounds 1 and 3, never the trace
-    assert "Looking first." in summaries[0]
-    assert "Done." in summaries[1]
+    assert summaries == [], summaries              # T1433: no card-summary side call, any round
+    assert cards[0].summary == "Looking first."
     assert cards[1].summary == "thinking: Now the second probe."
+    assert cards[2].summary == "Done."
