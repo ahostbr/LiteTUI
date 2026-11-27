@@ -19,7 +19,7 @@ def evidence(directory):
 
 
 @pytest.mark.parametrize("failure", ["applied-receipt", "before-intent"])
-@pytest.mark.parametrize("next_name", ["compact.md", "card-summary.md"])
+@pytest.mark.parametrize("next_name", ["compact.md", "plan-mode.md"])
 def test_cross_id_uncertainty_barrier_preserves_all_evidence(tmp_path, monkeypatch, failure, next_name):
     first = command(tmp_path, "compact.md", "A body")
     append = commands.append_audit
@@ -64,7 +64,7 @@ def test_uncertain_other_request_does_not_replay_historical_duplicate_or_ack(tmp
         p: b for p, b in before.items() if p != "prompts/audit.jsonl"}
     assert after["prompts/compact.md"] == b"new body"
     with pytest.raises(ValueError, match="uncertain"):
-        commands.apply(tmp_path, command(tmp_path, "card-summary.md", "still blocked"))
+        commands.apply(tmp_path, command(tmp_path, "plan-mode.md", "still blocked"))
 
 
 def test_completed_supersession_and_reset_remain_available(tmp_path):

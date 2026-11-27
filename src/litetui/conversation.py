@@ -345,29 +345,11 @@ class ConversationRepository:
         self.write_record({"type": "msg", "ts": time.time(), "message": message,
                            "store_notice": True})
 
-    def record_card_summary(self, key: str, summary: str, model: str = "") -> None:
-        """Persist one card's one-line summary.
-
-        ITS OWN RECORD TYPE, NOT A FIELD ON THE MESSAGE. The message dicts in
-        this file are replayed straight into the model's context, so a display
-        string parked inside one would either be sent to the API as an unknown
-        field or need stripping on every path that reads history. `read()`
-        ignores record types it does not know, so this is invisible to every
-        existing reader and to older builds of the app.
-
-        KEYED BY CONTENT, NOT BY INDEX. Compaction renumbers the
-        message list, so an index would silently re-point a summary at somebody
-        else's reply. A hash of the answer text moves with the text and stops
-        matching if the text ever changes, which is the correct failure.
-        """
-        self.write_record({
-            "type": "card_summary", "ts": time.time(),
-            "key": key, "summary": summary, "model": model,
-        })
-
     @staticmethod
     def card_summaries(path: Path) -> dict[str, str]:
-        """{answer-key: summary} for one conversation file.
+        """{answer-key: summary} for one conversation file: the "card_summary" records older builds
+        wrote (keyed by a hash of the answer; their own record type, so `read()` never replays them
+        into the model's context). Nothing writes them since T1433; this keeps those titles on reopen.
 
         A separate narrow pass rather than another return value from `read()`:
         that signature has several callers and none of them want this. Last

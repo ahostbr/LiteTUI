@@ -71,7 +71,7 @@ EXPECTED_EVENTS = {
     # event would have made the log unable to tell them apart.
     # Third dotted family here, after llama.* and task.* — the warning above
     # about needing more than one grep pattern now understates it.
-    # T1433 (Ryan 2026-11-26) removed both with the card-summary side call: 33 -> 31.
+    # T1433 (Ryan 2026-11-26) removed both producers with the card-summary side call.
     # Nine sites already exist in exact base 3ac6cbb0 (24 -> 33). T0332's
     # registration diagnostics use record_error, adding NO metadata producer.
     # Site provenance (adding commits, not this inventory-only correction):

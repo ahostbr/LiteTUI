@@ -18,7 +18,7 @@ from litetui.agent_store import StoreError, _unlinked
 # Source-controlled packaged catalog, not an inventory of a mutable install.
 # Backups, locks and other unshipped files must never become authored defaults.
 PACKAGED = frozenset({
-    "card-summary.md", "claude-tools.md", "compact-owner.md", "compact.md",
+    "claude-tools.md", "compact-owner.md", "compact.md",
     "conversation-store.md", "harness-capabilities.md", "ordinary-instructions.md",
     "owner-store.md", "plan-mode.md", "seat-instructions.md", "systemprompt.md",
     "tool-denied.md", "tools.md", "wake-after-compact.md",

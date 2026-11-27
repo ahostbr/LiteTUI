@@ -16,18 +16,6 @@ from litetui.conversation import ConversationRepository
 from litetui.widgets import AssistantMessage
 
 
-def _repo(make_app):
-    """A real owned repository staged in this test's temporary agent home."""
-    from uuid import uuid4
-
-    repo = make_app().store
-    repo.stage(str(uuid4()))
-    repo.convo_dir.mkdir()
-    repo.loading = False
-    repo.pending = False
-    return repo
-
-
 def _app():
     from test_compaction_ui import _app as owned_app
 
@@ -99,21 +87,27 @@ class TestKick:
         assert card.summary_done is True       # marked, not re-requested
 
 
+def _old_summary_rows(path, *rows):
+    """card_summary records as builds before T1433 wrote them (nothing writes them now)."""
+    path.write_text("\n".join(json.dumps(r) for r in (
+        {"type": "meta", "name": "t"},
+        *({"type": "card_summary", "ts": 1, "key": k, "summary": s, "model": "m"} for k, s in rows))) + "\n",
+        encoding="utf-8")
+
+
 class TestPersistence:
-    def test_record_and_read_back(self, make_app):
-        repo = _repo(make_app)
-        path = repo.convo_path
-        path.write_text(json.dumps({"type": "meta", "name": "t"}) + "\n", encoding="utf-8")
-        repo.record_card_summary("abc123", "Did the thing", "model-A")
+    def test_an_old_record_is_read_back(self, tmp_path):
+        path = tmp_path / "convo.jsonl"
+        _old_summary_rows(path, ("abc123", "Did the thing"))
         assert ConversationRepository.card_summaries(path) == {"abc123": "Did the thing"}
 
-    def test_last_record_wins(self, make_app):
-        repo = _repo(make_app)
-        path = repo.convo_path
-        path.write_text("", encoding="utf-8")
-        repo.record_card_summary("k", "first", "m")
-        repo.record_card_summary("k", "second", "m")
+    def test_last_record_wins(self, tmp_path):
+        path = tmp_path / "convo.jsonl"
+        _old_summary_rows(path, ("k", "first"), ("k", "second"))
         assert ConversationRepository.card_summaries(path)["k"] == "second"
+
+    def test_nothing_writes_a_summary_record_any_more(self):
+        assert not hasattr(ConversationRepository, "record_card_summary")
 
     def test_summary_records_are_invisible_to_the_message_reader(self, tmp_path):
         """The record must never reach the model's context."""
@@ -328,13 +322,12 @@ async def test_every_finished_card_in_a_turn_gets_its_line(monkeypatch, tmp_path
         _Stream([_Chunk(reasoning_content="Now the second probe. More follows.")] + _probe(2)),
         _Stream([_Chunk(content="Done.")]),
     ])
-    summaries = []
+    side_calls = []
 
     async def create(**kw):
         purpose = kw.get("purpose", "turn")
-        if purpose == "card-summary":
-            summaries.append(kw["messages"][0]["content"])
-        if purpose != "turn":                 # every side call, one canned line
+        if purpose != "turn":                 # any side call at all: recorded, one canned line
+            side_calls.append(purpose)
             return _Resp("one line")
         return next(rounds)
     monkeypatch.setattr(app_mod.model_transport, "for_app",
@@ -353,7 +346,7 @@ async def test_every_finished_card_in_a_turn_gets_its_line(monkeypatch, tmp_path
 
     assert len(cards) == 3, ([c.answer_text for c in cards], said)
     assert all(c.settled for c in cards)
-    assert summaries == [], summaries              # T1433: no card-summary side call, any round
+    assert side_calls == [], side_calls            # T1433: no side request, any round
     assert cards[0].summary == "Looking first."
     assert cards[1].summary == "thinking: Now the second probe."
     assert cards[2].summary == "Done."
