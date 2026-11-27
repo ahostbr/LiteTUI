@@ -331,6 +331,12 @@ def number_grid(scale: EffortScale | None) -> list[tuple[float, str]]:
     return rows
 
 
+def on_grid(value, scale: EffortScale | None) -> bool:
+    """Is `value` one of `number_grid(scale)`'s numbers (a row of its own, not a manual number)?"""
+    value = as_level(value)
+    return is_number(value) and any(float(number) == float(value) for number, _ in number_grid(scale))
+
+
 def number_hint(scale: EffortScale | None) -> str:
     """What may be typed for this model, said before it is typed."""
     if scale is None or not scale.template_read or not scale.numbers:

@@ -1362,8 +1362,12 @@ class ModelConfigBody(Widget):
                                 from litetui.effort_scale import app_scale, as_level, describe, is_number
                                 scale = app_scale(app) if self._key == app.model_id else None
                                 if scale is not None and scale.template_read:
+                                    from litetui.settings_screen import grid_choices
+
                                     saved = infer_cfg.get(key)
-                                    choices = [(scale.label(n), "off" if n == "none" else n) for n in scale.names]
+                                    # T1430: a fractional scale offers its number grid, as /think does.
+                                    choices = grid_choices(scale) or [
+                                        (scale.label(n), "off" if n == "none" else n) for n in scale.names]
                                     if saved not in (None, "") and saved not in [v for _, v in choices]:
                                         chip = describe(saved, scale)[0].removeprefix("think:")
                                         choices.append(((f"manual · {chip}" if is_number(as_level(saved))
@@ -1380,7 +1384,7 @@ class ModelConfigBody(Widget):
                                 # T1398 (Prefix 1610170e): a manual number here too, by the
                                 # Settings helpers (settings_screen.with_manual_row & co).
                                 from litetui.settings_screen import thinking_number_box, with_manual_row
-                                choices = with_manual_row(choices, saved)
+                                choices = with_manual_row(choices, saved, scale)
                                 after = [thinking_number_box("inf-reasoning_effort-number",
                                                              infer_cfg.get(key), scale)]
                             else:
@@ -1473,11 +1477,14 @@ class ModelConfigBody(Widget):
         """T1398: the per-model thinking number box shows while "manual number…" (or a number) is chosen."""
         if event.select.id != "inf-reasoning_effort":
             return
+        from litetui.effort_scale import app_scale
         from litetui.settings_screen import wants_number_box
 
         found = self.query("#inf-reasoning_effort-number")
         if found:
-            found.first().display = wants_number_box(event.value)
+            app = cast("LiteTUI", self.app)
+            scale = app_scale(app) if self._key == app.model_id else None
+            found.first().display = wants_number_box(event.value, scale)   # T1430: a grid number is a row
 
     # -- state carry across a live host swap --------------------------------
 
@@ -1688,14 +1695,14 @@ class ModelConfigBody(Widget):
         rule and the same "an unchanged stored number is kept" as Settings (settings_screen.manual_number)."""
         from litetui.settings_screen import manual_number, wants_number_box
 
-        chosen = infer_cfg.get("reasoning_effort")
-        found = self.query("#inf-reasoning_effort-number")
-        if chosen is None or not found or not wants_number_box(chosen):
-            return
         from litetui.effort_scale import app_scale, backend_label
 
         app = cast("LiteTUI", self.app)
         scale = app_scale(app) if self._key == app.model_id else None
+        chosen = infer_cfg.get("reasoning_effort")
+        found = self.query("#inf-reasoning_effort-number")
+        if chosen is None or not found or not wants_number_box(chosen, scale):
+            return
         infer_cfg["reasoning_effort"] = manual_number(
             "reasoning_effort", found.first().value, self._infer_cfg().get("reasoning_effort"), scale,
             backend_label(app))
