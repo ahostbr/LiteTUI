@@ -147,14 +147,37 @@ def powershell_exe() -> str | None:
 #: filesystem), and the WindowsApps bash.exe is the Store alias stub. So the
 #: well-known Git paths are tried first, and PATH only as a fallback with those
 #: two directories excluded.
+#:
+#: 🔴 T1397-B: NEVER Git's LAUNCHER, `<Git>\bin\bash.exe`. It is a wrapper that starts the real
+#: `<Git>\usr\bin\bash.exe`, and each start leaked ~1 kernel Token object (measured 2026-11-26,
+#: C:\Projects\.scratch\T1397\spawn-test*.txt; usr\bin\bash.exe leaked none). So the real bash is
+#: run directly and given what the launcher would have given it (`bash_env`). Order:
+#: $CLAUDE_CODE_GIT_BASH_PATH when set and present, then the well-known usr\bin paths, then PATH.
+#: A launcher path from any of them is swapped for its own usr\bin\bash.exe.
 _BASH_EXE: str | None = None
 _BASH_RESOLVED = False
 _BASH_WELL_KNOWN = (
-    r"C:\Program Files\Git\bin\bash.exe",
     r"C:\Program Files\Git\usr\bin\bash.exe",
-    r"C:\Program Files (x86)\Git\bin\bash.exe",
+    r"C:\Program Files (x86)\Git\usr\bin\bash.exe",
 )
 _BASH_STUB_DIRS = ("\\system32\\", "\\windowsapps\\")
+
+
+def _git_root(exe: str) -> Path | None:
+    """The Git for Windows root a bash.exe belongs to (`<root>\\usr\\bin\\bash.exe` or the launcher
+    `<root>\\bin\\bash.exe`), when that root holds the real bash; else None."""
+    path = Path(exe)
+    parts = [part.lower() for part in path.parts]
+    if path.name.lower() != "bash.exe" or len(parts) < 3:
+        return None
+    root = path.parents[2] if parts[-3:-1] == ["usr", "bin"] else path.parents[1] if parts[-2] == "bin" else None
+    return root if root is not None and (root / "usr" / "bin" / "bash.exe").is_file() else None
+
+
+def _real_bash(exe: str) -> str:
+    """`exe`, or for Git's launcher the usr\\bin\\bash.exe it would have started."""
+    root = _git_root(exe)
+    return str(root / "usr" / "bin" / "bash.exe") if root is not None else exe
 
 
 def bash_exe() -> str | None:
@@ -163,17 +186,33 @@ def bash_exe() -> str | None:
     if not _BASH_RESOLVED:
         _BASH_RESOLVED = True
         if os.name == "nt":
-            for cand in _BASH_WELL_KNOWN:
-                if os.path.isfile(cand):
-                    _BASH_EXE = cand
+            chosen = os.environ.get("CLAUDE_CODE_GIT_BASH_PATH", "").strip().strip('"')
+            for cand in ((chosen,) if chosen else ()) + _BASH_WELL_KNOWN:
+                if os.path.isfile(cand) and not any(d in cand.lower() for d in _BASH_STUB_DIRS):
+                    _BASH_EXE = _real_bash(cand)
                     break
             else:
                 found = shutil.which("bash")
                 if found and not any(d in found.lower() for d in _BASH_STUB_DIRS):
-                    _BASH_EXE = found
+                    _BASH_EXE = _real_bash(found)
         else:
             _BASH_EXE = shutil.which("bash")
     return _BASH_EXE
+
+
+def bash_env(exe, env: dict) -> dict:
+    """The environment Git's launcher gave its bash, given directly (T1397-B): MSYSTEM=MINGW64 and
+    PATH led by `<Git>\\mingw64\\bin;<Git>\\usr\\bin`, the root derived from `exe`, so ls, grep, sed,
+    git and curl resolve as they did under the launcher. Anything that is not a Git bash: `env`."""
+    root = _git_root(exe) if os.name == "nt" and isinstance(exe, str) else None
+    if root is None:
+        return env
+    env = dict(env)
+    key = next((k for k in env if k.upper() == "PATH"), "PATH")
+    lead = os.pathsep.join((str(root / "mingw64" / "bin"), str(root / "usr" / "bin")))
+    env[key] = lead + (os.pathsep + env[key] if env.get(key) else "")
+    env["MSYSTEM"] = "MINGW64"
+    return env
 
 
 #: EVERY CLAUSE HERE WAS MEASURED, not reasoned about. Plain `pwsh -Command`
@@ -243,7 +282,9 @@ def _run_shell(argv, *, shell: bool, timeout: int, agent_id: str | None = None) 
             stdin=subprocess.DEVNULL,
             cwd=str(Path.cwd()),
             # T1418: the child's network goes through the loopback filtering proxy.
-            env=egress_guard.proxy_env(harness.tool_process_env(agent_id)),
+            # T1397-B: a Git bash also gets the environment its launcher would have set.
+            env=bash_env(argv[0] if not shell else None,
+                         egress_guard.proxy_env(harness.tool_process_env(agent_id))),
             # The ONLY caller that opts in. See ttyguard.popen's docstring for
             # why the other three must not.
             kill_on_close=True,
