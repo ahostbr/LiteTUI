@@ -53,6 +53,14 @@ def test_forbidden_override_refuses_even_inactive(tmp_path, name):
         prompts.refresh(SimpleNamespace(convo_dir=tmp_path))
 
 
+def test_retired_prompt_copy_does_not_block_boot(tmp_path):
+    # 2026-11-27: T1433 retired card-summary.md; every seat home still held a copy and LiteTUI refused to start.
+    layer(tmp_path, "card-summary.md", "old seat copy")
+    (tmp_path / "prompts" / "card-summary.md.json").write_text(json.dumps({"active": True}))
+    snapshot = prompts.refresh(SimpleNamespace(convo_dir=tmp_path))
+    assert "card-summary.md" not in snapshot.texts and "card-summary.md" not in snapshot.overridden
+
+
 @pytest.mark.parametrize("name", ["../compact.md", "COMPACT.md", "compact.md:stream", "a/b.md", "a\\b.md"])
 def test_name_refusal(tmp_path, name):
     with pytest.raises(ValueError):

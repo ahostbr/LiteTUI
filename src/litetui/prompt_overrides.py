@@ -24,6 +24,9 @@ PACKAGED = frozenset({
     "tool-denied.md", "tools.md", "wake-after-compact.md",
 })
 MUTABLE = PACKAGED | {"role.md", "method.md"}
+# Prompts that USED to ship. Existing seat homes still hold their per-seat copies; those are now inert
+# leftovers, ignored at load, never a refusal (T1433 removed card-summary.md and every seat stopped booting).
+RETIRED = frozenset({"card-summary.md"})
 MAX_BYTES = 64 * 1024
 
 
@@ -125,6 +128,8 @@ def validate_layer(directory: Path | None) -> None:
     for path in folder.iterdir():
         checked(path)
         name = path.name[:-5] if path.name.endswith(".md.json") else path.name
+        if name in RETIRED:
+            continue  # a leftover copy of a prompt that no longer ships: inert, never loaded
         if name.endswith(".md"):
             if name not in MUTABLE:
                 raise PromptError(f"Per-seat override refused: {name} is global-only")
